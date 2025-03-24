@@ -17,3 +17,5 @@ func (h *homeHandler) handleAbout(w http.ResponseWriter, r *http.Request) error 
     user := getUserFromContext(r)
     return home.About(user).Render(r.Context(), w)
 }
+
+

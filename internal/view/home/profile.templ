@@ -1,14 +1,29 @@
+// package home
+
+// import "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
+
+// templ Profile(username, email string) {
+//     @layout.Base(layout.BaseProps{Title: "Profile"}) {
+//         <div class="max-w-md mx-auto mt-10">
+//             <h1 class="text-2xl font-bold mb-4">Profile</h1>
+//             <p class="text-gray-700">Username: { username }</p>
+//             <p class="text-gray-700">Email: { email }</p>
+//         </div>
+//     }
+// }
 package home
 
-import "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
+import (
+    "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
+    "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
+)
 
-templ Profile(username, email string) {
-    @layout.Base(layout.BaseProps{Title: "Profile"}) {
+templ Profile(user *service.User) {  // Теперь принимает *service.User
+    @layout.Base(layout.BaseProps{Title: "Profile", User: user}) {
         <div class="max-w-md mx-auto mt-10">
             <h1 class="text-2xl font-bold mb-4">Profile</h1>
-            <p class="text-gray-700">Username: { username }</p>
-            <p class="text-gray-700">Email: { email }</p>
+            <p class="text-gray-700">Username: { user.Username }</p>
+            <p class="text-gray-700">Email: { user.Email }</p>
         </div>
     }
 }
-

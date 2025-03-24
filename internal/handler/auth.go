@@ -110,11 +110,10 @@ func (h *AuthHandler) handleLogout(w http.ResponseWriter, r *http.Request) error
     http.Redirect(w, r, "/", http.StatusSeeOther)
     return nil
 }
-
 func (h *AuthHandler) sessionMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         cookie, err := r.Cookie("session_token")
-        if err == nil { // Если кука есть, пробуем найти пользователя
+        if err == nil {
             var user service.User
             err = h.UserService.DB.QueryRow(r.Context(),
                 "SELECT u.id, u.username, u.email FROM users u JOIN sessions s ON u.id = s.user_id WHERE s.token = $1", 
@@ -127,6 +126,22 @@ func (h *AuthHandler) sessionMiddleware(next http.Handler) http.Handler {
         next.ServeHTTP(w, r)
     })
 }
+// func (h *AuthHandler) sessionMiddleware(next http.Handler) http.Handler {
+//     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//         cookie, err := r.Cookie("session_token")
+//         if err == nil { // Если кука есть, пробуем найти пользователя
+//             var user service.User
+//             err = h.UserService.DB.QueryRow(r.Context(),
+//                 "SELECT u.id, u.username, u.email FROM users u JOIN sessions s ON u.id = s.user_id WHERE s.token = $1", 
+//                 cookie.Value,
+//             ).Scan(&user.ID, &user.Username, &user.Email)
+//             if err == nil {
+//                 r = r.WithContext(context.WithValue(r.Context(), userContextKey, &user))
+//             }
+//         }
+//         next.ServeHTTP(w, r)
+//     })
+// }
 
 func (h *AuthHandler) authMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,24 +154,32 @@ func (h *AuthHandler) authMiddleware(next http.Handler) http.Handler {
     })
 }
 
-
-
 func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) error {
-    cookie, err := r.Cookie("session_token")
-    if err != nil {
+    user := getUserFromContext(r)
+    if user == nil {
         http.Redirect(w, r, "/login", http.StatusSeeOther)
         return nil
     }
 
-    var user service.User
-    err = h.UserService.DB.QueryRow(r.Context(), "SELECT u.id, u.username, u.email FROM users u JOIN sessions s ON u.id = s.user_id WHERE s.token = $1", cookie.Value).Scan(&user.ID, &user.Username, &user.Email)
-    if err != nil {
-        http.Redirect(w, r, "/login", http.StatusSeeOther)
-        return nil
-    }
-
-    return home.Profile(user.Username, user.Email).Render(r.Context(), w)
+    return home.Profile(user).Render(r.Context(), w)  // Теперь передаём *service.User
 }
+
+// func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) error {
+//     cookie, err := r.Cookie("session_token")
+//     if err != nil {
+//         http.Redirect(w, r, "/login", http.StatusSeeOther)
+//         return nil
+//     }
+
+//     var user service.User
+//     err = h.UserService.DB.QueryRow(r.Context(), "SELECT u.id, u.username, u.email FROM users u JOIN sessions s ON u.id = s.user_id WHERE s.token = $1", cookie.Value).Scan(&user.ID, &user.Username, &user.Email)
+//     if err != nil {
+//         http.Redirect(w, r, "/login", http.StatusSeeOther)
+//         return nil
+//     }
+
+//     return home.Profile(user.Username, user.Email).Render(r.Context(), w)
+// }
 
 func getUserFromContext(r *http.Request) *service.User {
     user, ok := r.Context().Value(userContextKey).(*service.User)

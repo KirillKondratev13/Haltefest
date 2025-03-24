@@ -1,0 +1,49 @@
+package layout
+
+import "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
+
+type BaseProps struct {
+    Title string
+    User *service.User
+}
+
+templ Base(props BaseProps) {
+    <html>
+        <head>
+            <title>{ props.Title }</title>
+            <link rel="stylesheet" href="/assets/main.css"/>
+        </head>
+        <body>
+            @header(props.User)
+            <div class="container mx-auto py-4">
+                { children... }
+            </div>
+            <script src="/assets/main.js"></script>
+        </body>
+    </html>
+}
+
+templ header(user *service.User) {
+    <header class="navbar bg-primary text-primary-content" hx-boost="true">
+        <div class="flex-none">
+            <a href="/" class="btn btn-ghost text-xl">My App</a>
+        </div>
+        <div class="flex-1">
+            <ul class="menu menu-horizontal">
+                <li><a href="/">Home</a></li>
+                <li><a href="/about">About</a></li>
+                if user == nil {
+                    <li><a href="/register">Register</a></li>
+                    <li><a href="/login">Login</a></li>
+                } else {
+                    <li><a href="/profile">Profile</a></li>
+                    <li>
+                        <form method="POST" action="/logout">
+                            <button type="submit">Logout</button>
+                        </form>
+                    </li>
+                }
+            </ul>
+        </div>
+    </header>
+}

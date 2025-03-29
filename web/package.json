@@ -6,7 +6,7 @@
 	},
 	"scripts": {
 		"build:css": "npx tailwindcss -i src/main.css -o public/assets/main.css",
-		"build:js": "npx esbuild src/main.js --bundle --outfile=public/assets/main.js",
+		"build:js": "npx esbuild src/main.js --bundle --outfile=public/assets/main.js --format=esm --external:fs --external:path --loader:.js=jsx",
 		"watch:css": "npm run build:css -- --watch",
 		"watch:js": "npm run build:js -- --watch=forever"
 	},

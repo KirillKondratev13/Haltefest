@@ -17,13 +17,25 @@ import (
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
-
-templ Profile(user *service.User) {  // Теперь принимает *service.User
+templ Profile(user *service.User) {
     @layout.Base(layout.BaseProps{Title: "Profile", User: user}) {
         <div class="max-w-md mx-auto mt-10">
             <h1 class="text-2xl font-bold mb-4">Profile</h1>
             <p class="text-gray-700">Username: { user.Username }</p>
             <p class="text-gray-700">Email: { user.Email }</p>
+            <div class="mt-10"> </div>
         </div>
+
+        <div class="flex flex-col items-center">
+            
+            <!-- Контейнер для графа с передачей имени пользователя -->
+            <div 
+                id="graph-container" 
+                class="w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6"
+                data-username={ user.Username }
+            ></div>
+        </div>
+
+
     }
 }

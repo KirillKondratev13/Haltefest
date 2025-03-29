@@ -26,6 +26,8 @@ func (s *UserService) CreateUser(ctx context.Context, username, email, passwordH
     err := s.DB.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)", email).Scan(&exists)
     if err != nil {
         return nil, err
+        // slog.Error("failed to create user", "error", err, "email", email)
+        // return nil, fmt.Errorf("create user: %w", err)
     }
     if exists {
         return nil, fmt.Errorf("user with email %s already exists", email)
@@ -42,3 +44,4 @@ func (s *UserService) CreateUser(ctx context.Context, username, email, passwordH
     }
     return &user, nil
 }
+

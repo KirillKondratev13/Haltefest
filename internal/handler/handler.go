@@ -11,13 +11,23 @@ import (
 type Dependencies struct {
     AssetsFS   http.FileSystem
     UserService *service.UserService // Используем UserService из service
+    SeaweedFSURL string
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func RegisterRoutes(r *chi.Mux, deps Dependencies) {
     home := homeHandler{}
-    auth := AuthHandler{UserService: deps.UserService}
+    fileService := &service.FileService{
+        DB:          deps.UserService.DB,
+        MasterURL: deps.SeaweedFSURL + "/dir",  // "http://localhost:9333/dir"
+        VolumeURL: "http://localhost:8080",
+    }
+    
+    auth := AuthHandler{
+        UserService: deps.UserService,
+        FileService: fileService,
+    }
 
     // Добавляем sessionMiddleware ко всем маршрутам
     r.Use(auth.sessionMiddleware)
@@ -34,10 +44,56 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
         r.Use(auth.authMiddleware)
         r.Get("/profile", handler(auth.handleProfile))
         r.Post("/logout", handler(auth.handleLogout))
+
+        // Новые эндпоинты для работы с файлами
+        r.Post("/upload", handler(auth.handleUploadFile))      // ✅ Добавили
+        r.Get("/files", handler(auth.handleListFiles))         // ✅ Добавили
     })
 
     r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
 }
+
+// func RegisterRoutes(r *chi.Mux, deps Dependencies) {
+
+
+//     home := homeHandler{}
+
+//     fileService := &service.FileService{
+//         DB:          deps.UserService.DB,
+//         SeaweedFSURL: deps.SeaweedFSURL,
+//     }
+    
+//     auth := AuthHandler{
+//         UserService: deps.UserService,
+//         FileService: fileService,
+//     }
+
+//     // Группа публичных роутов
+//     r.Group(func(r chi.Router) {
+//         r.Use(auth.sessionMiddleware)
+//         r.Get("/", handler(home.handlerIndex))
+//         r.Get("/about", handler(home.handleAbout))
+//         r.Get("/register", handler(auth.handleRegisterPage))
+//         r.Post("/register", handler(auth.handleRegister))
+//         r.Get("/login", handler(auth.handleLoginPage))
+//         r.Post("/login", handler(auth.handleLogin))
+//     })
+
+//     // Группа защищенных роутов (требуют аутентификации)
+//     r.Group(func(r chi.Router) {
+//         r.Use(auth.authMiddleware) // Проверяем авторизацию
+        
+//         // Профиль и файлы
+//         r.Get("/profile", handler(auth.handleProfile))
+//         r.Post("/logout", handler(auth.handleLogout))
+        
+//         // Новые эндпоинты для работы с файлами
+//         r.Post("/upload", handler(auth.handleUploadFile))      // ✅ Добавили
+//         r.Get("/files", handler(auth.handleListFiles))         // ✅ Добавили
+//     })
+
+//     r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
+// }
 
 
 

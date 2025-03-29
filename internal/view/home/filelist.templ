@@ -1,0 +1,26 @@
+package home
+
+import "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
+import "github.com/Cyr1ll/golang-templ-htmx-app/internal/utils"
+
+templ FileList(files []service.UserFile) {
+    <div class="space-y-2">
+        if len(files) == 0 {
+            <p class="text-gray-500">No files uploaded yet.</p>
+        } else {
+            <ul class="divide-y divide-gray-200">
+                for _, file := range files {
+                    <li class="py-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-medium">{ file.OriginalName }</span>
+                            <span class="text-sm text-gray-500">{ utils.FormatFileSize(file.Size) }</span>
+                        </div>
+                        <div class="text-sm text-gray-500">
+                            Uploaded: { file.CreatedAt.Format("2006-01-02 15:04") }
+                        </div>
+                    </li>
+                }
+            </ul>
+        }
+    </div>
+}

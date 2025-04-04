@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -16,167 +17,90 @@ type FileService struct {
     MasterURL  string
     VolumeURL    string
 }
+
 func (s *FileService) UploadFile(ctx context.Context, userID int, file io.Reader, filename string) (*UserFile, error) {
-    // 1. Читаем первые 512 байт для определения MIME-типа
+    // Читаем первые 512 байт, определяем MIME-тип
     mimeBuffer := make([]byte, 512)
-    n, err := file.Read(mimeBuffer)
-    if err != nil && err != io.EOF {
+    n, err := io.ReadFull(file, mimeBuffer)
+    if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
         return nil, fmt.Errorf("failed to read file header: %w", err)
     }
     mimeType := http.DetectContentType(mimeBuffer[:n])
 
-    // 2. Создаем pipe для потоковой передачи
-    pr, pw := io.Pipe()
-    defer pr.Close()
+    // Получаем file_id от SeaweedFS
+    
+    assignURL := fmt.Sprintf("%s/assign", strings.TrimSuffix(s.MasterURL, "/"))
+    fmt.Println("Requesting:", assignURL)
 
-    // 3. Запрашиваем file_id у SeaweedFS
-    assignResp, err := http.Get(s.MasterURL + "/dir/assign")
+    assignResp, err := http.Get(assignURL)
     if err != nil {
         return nil, fmt.Errorf("failed to get file ID: %w", err)
     }
     defer assignResp.Body.Close()
 
     var result struct {
-        Fid string `json:"fid"`
-        URL string `json:"url"`
+        Fid       string `json:"fid"`
+        Url       string `json:"url"`
+        PublicUrl string `json:"publicUrl"`
     }
+    body, _ := io.ReadAll(assignResp.Body)
+    fmt.Println("SeaweedFS assign response:", string(body))
+    assignResp.Body = io.NopCloser(bytes.NewReader(body)) // Восстанавливаем тело ответа
+
     if err := json.NewDecoder(assignResp.Body).Decode(&result); err != nil {
         return nil, fmt.Errorf("failed to parse assign response: %w", err)
     }
 
-    // 4. Запускаем загрузку в отдельной горутине
+    // Создаем pipe и bufer для потока
+    pr, pw := io.Pipe()
+    //bufWriter := bufio.NewWriter(pw)
+
     go func() {
         defer pw.Close()
+        //defer bufWriter.Flush() может вызвать проблемы с CloseWithError
         
-        // Пишем первые 512 байт
-        if _, err := pw.Write(mimeBuffer[:n]); err != nil {
+        // Сначала пишем MIME-буфер
+        if _, err := /*bufWriter*/pw.Write(mimeBuffer[:n]); err != nil {
             pw.CloseWithError(err)
             return
         }
-        
-        // Копируем остаток файла
+        // Затем оставшуюся часть файла
         if _, err := io.Copy(pw, file); err != nil {
             pw.CloseWithError(err)
         }
     }()
 
-    // 5. Создаем запрос с pipe reader
-    uploadURL := "http://" + result.URL + "/" + result.Fid
-    req, err := http.NewRequest("PUT", uploadURL, pr)
+    // Отправляем файл в SeaweedFS
+    uploadURL := fmt.Sprintf("http://%s/%s", result.Url, result.Fid)
+    req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL, pr)
     if err != nil {
         return nil, fmt.Errorf("failed to create upload request: %w", err)
     }
     req.Header.Set("Content-Type", mimeType)
 
-    // 6. Выполняем запрос
     resp, err := http.DefaultClient.Do(req)
     if err != nil {
         return nil, fmt.Errorf("upload failed: %w", err)
     }
     defer resp.Body.Close()
 
-    if resp.StatusCode != http.StatusCreated {
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
         body, _ := io.ReadAll(resp.Body)
-        return nil, fmt.Errorf("upload failed with status: %s, response: %s", resp.Status, string(body))
+        return nil, fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
     }
 
-    // 7. Получаем размер файла (через tee reader)
-    sizeReader := &bytes.Buffer{}
-    tee := io.TeeReader(io.MultiReader(bytes.NewReader(mimeBuffer[:n]), file), sizeReader)
-    size, err := io.Copy(io.Discard, tee)
-    if err != nil {
-        return nil, fmt.Errorf("failed to get file size: %w", err)
-    }
-
-    // 8. Сохраняем метаданные
+    // Записываем в БД
     var userFile UserFile
     err = s.DB.QueryRow(ctx,
-        `INSERT INTO user_files 
-        (user_id, seaweedfs_file_id, original_name, size, mime_type) 
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, created_at`,
-        userID, result.Fid, filename, size, mimeType,
+        `INSERT INTO user_files (user_id, seaweedfs_file_id, original_name, size, mime_type) 
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
+        userID, result.Fid, filename, int64(n), mimeType, // `int64(n)`, если мы знаем размер
     ).Scan(&userFile.ID, &userFile.CreatedAt)
 
     return &userFile, err
 }
 
-// Загружает файл в SeaweedFS и сохраняет метаданные в PostgreSQL.
-func (s *FileService) UploadFile1(ctx context.Context, userID int, file io.Reader, filename string) (*UserFile, error) {
-    // 0. Подготовка: создаем MultiReader для повторного чтения файла
-    var buf bytes.Buffer
-    tee := io.TeeReader(file, &buf)
-    combinedReader := io.MultiReader(&buf, file)
 
-    // 1. Определяем MIME-тип
-    mimeBuffer := make([]byte, 512)
-    if _, err := tee.Read(mimeBuffer); err != nil && err != io.EOF {
-        return nil, fmt.Errorf("failed to read file header: %w", err)
-    }
-    mimeType := http.DetectContentType(mimeBuffer)
-
-    // 2. Определяем размер файла
-    size, err := io.Copy(io.Discard, combinedReader)
-    if err != nil {
-        return nil, fmt.Errorf("failed to determine file size: %w", err)
-    }
-
-    // 3. Запрашиваем уникальный file_id у SeaweedFS
-    assignResp, err := http.Get(s.MasterURL + "/dir/assign")
-    if err != nil {
-        return nil, fmt.Errorf("failed to get file ID: %w", err)
-    }
-    defer assignResp.Body.Close()
-
-    var result struct {
-        Fid string `json:"fid"`
-        URL string `json:"url"`
-    }
-    if err := json.NewDecoder(assignResp.Body).Decode(&result); err != nil {
-        return nil, fmt.Errorf("failed to parse assign response: %w", err)
-    }
-
-    // 4. Загружаем файл в SeaweedFS (читаем еще раз из буфера)
-    uploadURL := "http://" + result.URL + "/" + result.Fid
-    req, err := http.NewRequest("PUT", uploadURL, io.MultiReader(bytes.NewReader(mimeBuffer), &buf))
-    if err != nil {
-        return nil, fmt.Errorf("failed to create upload request: %w", err)
-    }
-
-    // Устанавливаем Content-Type
-    req.Header.Set("Content-Type", mimeType)
-
-    resp, err := http.DefaultClient.Do(req)
-    if err != nil {
-        return nil, fmt.Errorf("upload failed: %w", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusCreated {
-        body, _ := io.ReadAll(resp.Body)
-        return nil, fmt.Errorf("upload failed with status: %s, response: %s", resp.Status, string(body))
-    }
-
-    // 5. Сохраняем метаданные в БД
-    var userFile UserFile
-    err = s.DB.QueryRow(ctx,
-        `INSERT INTO user_files 
-        (user_id, seaweedfs_file_id, original_name, size, mime_type) 
-        VALUES ($1, $2, $3, $4, $5) 
-        RETURNING id, created_at`,
-        userID,
-        result.Fid,
-        filename,
-        size,
-        mimeType, // Используем определенный MIME-тип
-    ).Scan(&userFile.ID, &userFile.CreatedAt)
-
-    if err != nil {
-        return nil, fmt.Errorf("failed to save file metadata: %w", err)
-    }
-
-    return &userFile, nil
-}
 
 func (s *FileService) GetUserFiles(ctx context.Context, userID int) ([]UserFile, error) {
     rows, err := s.DB.Query(ctx, 

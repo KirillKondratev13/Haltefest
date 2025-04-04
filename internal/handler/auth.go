@@ -193,12 +193,11 @@ func (h *AuthHandler) handleUploadFile(w http.ResponseWriter, r *http.Request) e
     defer file.Close()
 
     uploadedFile, err := h.FileService.UploadFile(r.Context(), user.ID, file, header.Filename)
-    if err == nil {
-    slog.Info("File uploaded", "id", uploadedFile.ID, "name", uploadedFile.OriginalName)
-    }
     if err != nil {
-        return fmt.Errorf("upload failed: %w", err)
+    return fmt.Errorf("upload failed: %w", err)
     }
+    slog.Info("File uploaded", "id", uploadedFile.ID, "name", uploadedFile.OriginalName)
+
 
     // Возвращаем HTMX-ответ (можно обновить список файлов)
     w.Header().Set("HX-Refresh", "true")

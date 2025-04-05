@@ -11,6 +11,12 @@
 		"watch:js": "npm run build:js -- --watch=forever"
 	},
 	"dependencies": {
-		"htmx.org": "^2.0.2"
+		"htmx.org": "^2.0.2",
+		"vis-data": "^7.1.9",
+		"vis-network": "^9.1.9",
+		"@egjs/hammerjs": "^2.0.17",
+		"keycharm": "^0.4.0",
+		"uuid": "^9.0.1",
+		"vis-util": "^5.0.7"
 	}
 }

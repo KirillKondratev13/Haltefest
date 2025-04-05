@@ -12,7 +12,7 @@ func NewConfig() Config {
 	return Config{
 		ServerAddr: ":8081",
 		AssetsDir: "./web/public/assets",
-		DBConnStr:  "postgres://myappuser:mypassword@localhost:5432/myapp",
+		DBConnStr:  "postgres://myappuser:mypassword@localhost:5432/myapp?sslmode=disable",
 		SeaweedFSMasterURL: "http://localhost:9333",
 		SeaweedFSVolumeURL: "http://localhost:8080",
 	}

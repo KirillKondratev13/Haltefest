@@ -33,6 +33,8 @@
 ehthumbs.db
 Thumbs.db
 
+/seaweedfs_data/
+
 # Environment files
 .env
 .env.local

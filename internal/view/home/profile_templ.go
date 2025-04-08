@@ -13,7 +13,7 @@ import (
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
 
-func Profile(user *service.User) templ.Component {
+func Profile(user *service.User, files []service.UserFile) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -53,7 +53,7 @@ func Profile(user *service.User) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(user.Username)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 11, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 13, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -66,20 +66,20 @@ func Profile(user *service.User) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(user.Email)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 12, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 14, Col: 56}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</p><div class=\"mt-10\"></div></div><!-- Форма загрузки файла --> <form hx-post=\"/upload\" hx-encoding=\"multipart/form-data\" class=\"mt-6 border rounded-lg p-4\"><label class=\"block text-sm font-medium text-gray-700\">Upload file</label> <input type=\"file\" name=\"file\" class=\"mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100\"> <button type=\"submit\" class=\"mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700\">Upload</button></form><!-- Список файлов (будет обновляться через HTMX) --> <div id=\"file-list\" class=\"mt-6\" hx-get=\"/files\" hx-trigger=\"load, every 5s\"><!-- Сюда подгрузится список через HTMX --><div class=\"text-gray-500\">Loading files...</div></div><div class=\"flex flex-col items-center\"><div id=\"graph-container\" class=\"w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6\" data-username=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</p><!-- Форма для загрузки файла --><form action=\"/profile/upload\" method=\"POST\" enctype=\"multipart/form-data\" class=\"mt-6 space-y-4\"><div><label class=\"block font-medium mb-1\" for=\"file\">Upload file:</label> <input class=\"border border-gray-300 p-2 w-full\" type=\"file\" id=\"file\" name=\"file\" required></div><button class=\"btn btn-primary\" type=\"submit\">Upload</button></form><!-- Здесь же (или ниже) выведем список файлов пользователя --><div class=\"mt-10\"><h2 class=\"text-xl font-bold mb-2\">Your files</h2><ul>for file in files <li>file.FileName  (  <a href=\"#\">download link (заглушка)</a> )</li></ul></div></div><div class=\"flex flex-col items-center\"><div id=\"graph-container\" class=\"w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6\" data-username=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(user.Username)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 49, Col: 45}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 60, Col: 45}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {

@@ -1,11 +1,9 @@
-﻿CREATE TABLE user_files (
+﻿CREATE TABLE IF NOT EXISTS files (
     id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    seaweedfs_file_id VARCHAR(255) NOT NULL,  -- Идентификатор файла в SeaweedFS
-    original_name TEXT NOT NULL,              -- Оригинальное имя файла
-    size BIGINT NOT NULL,                     -- Размер файла в байтах
-    mime_type TEXT,                           -- MIME-тип (например, "image/png")
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_size BIGINT NOT NULL,
+    file_type TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX idx_user_files_user_id ON user_files(user_id);

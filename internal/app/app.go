@@ -25,16 +25,14 @@ func Run(ctx context.Context) error {
 
     // Создаем сервисы
     userService := &service.UserService{DB: dbpool}
-    fileService := &service.FileService{
-    DB:        dbpool, // передаем пул напрямую
-    MasterURL: cfg.SeaweedFSMasterURL + "/dir",
-    VolumeURL: cfg.SeaweedFSVolumeURL,
-}
+
+
+
     r := chi.NewRouter()
     handler.RegisterRoutes(r, handler.Dependencies{
         AssetsFS:     http.Dir(cfg.AssetsDir),
         UserService:  userService,
-        FileService:  fileService, // передаём готовый сервис
+
     })
 
     s := http.Server{

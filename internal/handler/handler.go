@@ -11,21 +11,22 @@ import (
 type Dependencies struct {
     AssetsFS   http.FileSystem
     UserService *service.UserService // Используем UserService из service
-    FileService *service.FileService
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func RegisterRoutes(r *chi.Mux, deps Dependencies) {
     home := homeHandler{}
-    // fileService := &service.FileService{
-    //     DB:          deps.UserService.DB,
-    //     FileService: deps.FileService,
-    // }
+
     
     auth := AuthHandler{
         UserService: deps.UserService,
-        FileService: deps.FileService,
+    }
+    // Инициализируем FileHandler
+    fileHandler := FileHandler{
+        UserService: deps.UserService,
+        // пусть пока хардкод (или возьмите из config)
+        FilerURL: "http://localhost:8888",
     }
 
     // Добавляем sessionMiddleware ко всем маршрутам
@@ -44,9 +45,7 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
         r.Get("/profile", handler(auth.handleProfile))
         r.Post("/logout", handler(auth.handleLogout))
 
-        // Новые эндпоинты для работы с файлами
-        r.Post("/upload", handler(auth.handleUploadFile))      // ✅ Добавили
-        r.Get("/files", handler(auth.handleListFiles))         // ✅ Добавили
+        r.Post("/profile/upload", handler(fileHandler.handleFileUpload)) // <-- Новое
     })
 
     r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))

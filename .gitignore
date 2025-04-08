@@ -16,7 +16,7 @@
 
 # Templ generated files
 *_templ.go
-*_templ.txt
+
 
 # IDE specific files
 .idea/

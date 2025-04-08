@@ -4,52 +4,59 @@ import (
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
+
 templ Profile(user *service.User) {
     @layout.Base(layout.BaseProps{Title: "Profile", User: user}) {
         <div class="max-w-md mx-auto mt-10">
             <h1 class="text-2xl font-bold mb-4">Profile</h1>
             <p class="text-gray-700">Username: { user.Username }</p>
             <p class="text-gray-700">Email: { user.Email }</p>
-            <div class="mt-10"> </div>
-        </div>
 
-        
-            <!-- Форма загрузки файла -->
+            <!-- Форма для загрузки файла -->
             <form 
-                hx-post="/upload" 
-                hx-encoding="multipart/form-data" 
-                class="mt-6 border rounded-lg p-4"
+                action="/profile/upload" 
+                method="POST" 
+                enctype="multipart/form-data" 
+                class="mt-6 space-y-4"
             >
-                <label class="block text-sm font-medium text-gray-700">Upload file</label>
-                <input 
-                    type="file" 
-                    name="file" 
-                    class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                />
+                <div>
+                    <label class="block font-medium mb-1" for="file">Upload file:</label>
+                    <input 
+                        class="border border-gray-300 p-2 w-full" 
+                        type="file" 
+                        id="file" 
+                        name="file"
+                        required
+                    />
+                </div>
                 <button 
-                    type="submit" 
-                    class="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                    class="btn btn-primary" 
+                    type="submit"
                 >
                     Upload
                 </button>
             </form>
 
-            <!-- Список файлов (будет обновляться через HTMX) -->
-            <div id="file-list" class="mt-6" hx-get="/files" hx-trigger="load, every 5s">
-                <!-- Сюда подгрузится список через HTMX -->
-                <div class="text-gray-500">Loading files...</div>
+            <!-- Здесь же (или ниже) выведем список файлов пользователя -->
+            <div class="mt-10">
+                <h2 class="text-xl font-bold mb-2">Your files</h2>
+                <ul>
+                    <!-- Допустим, мы будем передавать список файлов из handler и выводить его здесь -->
+                    <!-- Пример статичной заглушки, которую заменим на динамическую: -->
+                    <!--
+                    <li>file1.png (link to download)</li>
+                    <li>document.pdf (link to download)</li>
+                    -->
+                </ul>
+            </div>
         </div>
 
         <div class="flex flex-col items-center">
-            
-
             <div 
                 id="graph-container" 
                 class="w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6"
                 data-username={ user.Username }
             ></div>
         </div>
-
-
     }
 }

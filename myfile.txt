@@ -1,2 +1,53 @@
-11
+myapp=# \dt
+           List of relations
+ Schema |   Name   | Type  |   Owner   
+--------+----------+-------+-----------
+ public | files    | table | myappuser
+ public | sessions | table | myappuser
+ public | users    | table | postgres
+(3 rows)
 
+                                        Table "public.files"
+   Column   |            Type             | Collation | Nullable |              Default              
+------------+-----------------------------+-----------+----------+-----------------------------------
+ id         | integer                     |           | not null | nextval('files_id_seq'::regclass)
+ user_id    | integer                     |           | not null | 
+ file_name  | text                        |           | not null | 
+ file_path  | text                        |           | not null | 
+ file_size  | bigint                      |           | not null | 
+ file_type  | text                        |           | not null | 
+ created_at | timestamp without time zone |           | not null | now()
+Indexes:
+    "files_pkey" PRIMARY KEY, btree (id)
+Foreign-key constraints:
+    "files_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+
+                                          Table "public.users"
+    Column     |            Type             | Collation | Nullable |              Default              
+---------------+-----------------------------+-----------+----------+-----------------------------------
+ id            | integer                     |           | not null | nextval('users_id_seq'::regclass)
+ username      | character varying(50)       |           | not null | 
+ email         | character varying(100)      |           | not null | 
+ password_hash | character varying(255)      |           | not null | 
+ created_at    | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (id)
+    "users_email_key" UNIQUE CONSTRAINT, btree (email)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+Referenced by:
+    TABLE "files" CONSTRAINT "files_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    TABLE "sessions" CONSTRAINT "sessions_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id)
+
+
+                                        Table "public.sessions"
+   Column   |            Type             | Collation | Nullable |               Default                
+------------+-----------------------------+-----------+----------+--------------------------------------
+ id         | integer                     |           | not null | nextval('sessions_id_seq'::regclass)
+ user_id    | integer                     |           |          | 
+ token      | text                        |           | not null | 
+ created_at | timestamp without time zone |           |          | CURRENT_TIMESTAMP
+Indexes:
+    "sessions_pkey" PRIMARY KEY, btree (id)
+    "sessions_token_key" UNIQUE CONSTRAINT, btree (token)
+Foreign-key constraints:
+    "sessions_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id)

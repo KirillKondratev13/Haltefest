@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +15,6 @@ import (
 
 type AuthHandler struct {
     UserService *service.UserService
-    FileService *service.FileService
 }
 
 type contextKey string
@@ -148,8 +145,15 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
         http.Redirect(w, r, "/login", http.StatusSeeOther)
         return nil
     }
+    
+    // Получаем список файлов
+    files, err := h.UserService.GetUserFiles(r.Context(), user.ID)
+    if err != nil {
+        return err
+    }
 
-    return home.Profile(user).Render(r.Context(), w)  // Теперь передаём *service.User
+
+    return home.Profile(user, files).Render(r.Context(), w)  // Теперь передаём *service.User
 }
 
 
@@ -174,47 +178,4 @@ func hashPassword(password string) (string, error) {
         return "", err
     }
     return string(bytes), nil
-}
-
-// Новые методы для файлов
-func (h *AuthHandler) handleUploadFile(w http.ResponseWriter, r *http.Request) error {
-    user := getUserFromContext(r)
-    if user == nil {
-        return fmt.Errorf("unauthorized")
-    }
-
-    // Ограничиваем размер файла (например, 10MB)
-    r.ParseMultipartForm(10 << 20)
-    
-    file, header, err := r.FormFile("file")
-    if err != nil {
-        return fmt.Errorf("read file: %w", err)
-    }
-    defer file.Close()
-
-    uploadedFile, err := h.FileService.UploadFile(r.Context(), user.ID, file, header.Filename)
-    if err != nil {
-    return fmt.Errorf("upload failed: %w", err)
-    }
-    slog.Info("File uploaded", "id", uploadedFile.ID, "name", uploadedFile.OriginalName)
-
-
-    // Возвращаем HTMX-ответ (можно обновить список файлов)
-    w.Header().Set("HX-Refresh", "true")
-    return nil
-}
-
-func (h *AuthHandler) handleListFiles(w http.ResponseWriter, r *http.Request) error {
-    user := getUserFromContext(r)
-    if user == nil {
-        return fmt.Errorf("unauthorized")
-    }
-
-    files, err := h.FileService.GetUserFiles(r.Context(), user.ID)
-    if err != nil {
-        return err
-    }
-
-    // Рендерим список файлов (пример для HTMX)
-    return home.FileList(files).Render(r.Context(), w)
 }

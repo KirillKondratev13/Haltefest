@@ -16,9 +16,21 @@ type User struct {
     CreatedAt    time.Time // Изменяем тип на time.Time
 }
 
+// В service.go (или в отдельном file_service.go)
+type UserFile struct {
+    ID        int
+    UserID    int
+    FileName  string
+    FilePath  string
+    FileSize  int64
+    FileType  string
+    CreatedAt time.Time
+}
+
 type UserService struct {
     DB *pgxpool.Pool
 }
+
 
 func (s *UserService) CreateUser(ctx context.Context, username, email, passwordHash string) (*User, error) {
     // Проверяем, существует ли пользователь с таким email
@@ -45,3 +57,26 @@ func (s *UserService) CreateUser(ctx context.Context, username, email, passwordH
     return &user, nil
 }
 
+func (s *UserService) GetUserFiles(ctx context.Context, userID int) ([]UserFile, error) {
+    rows, err := s.DB.Query(ctx, `
+        SELECT id, user_id, file_name, file_path, file_size, file_type, created_at
+        FROM files
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+    `, userID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var result []UserFile
+    for rows.Next() {
+        var f UserFile
+        err := rows.Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.CreatedAt)
+        if err != nil {
+            return nil, err
+        }
+        result = append(result, f)
+    }
+    return result, rows.Err()
+}

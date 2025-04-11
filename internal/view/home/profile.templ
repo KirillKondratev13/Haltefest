@@ -1,62 +1,92 @@
 package home
 
 import (
+    //"fmt"
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
 
-templ Profile(user *service.User) {
-    @layout.Base(layout.BaseProps{Title: "Profile", User: user}) {
-        <div class="max-w-md mx-auto mt-10">
-            <h1 class="text-2xl font-bold mb-4">Profile</h1>
-            <p class="text-gray-700">Username: { user.Username }</p>
-            <p class="text-gray-700">Email: { user.Email }</p>
+templ Profile(user *service.User, files []service.UserFile) {
+    @layout.Base(layout.BaseProps{
+        Title: "Profile",
+        User: user,
+    }) {
+        <main>
+            <!-- Профиль пользователя -->
+            <div class="max-w-md mx-auto mt-10">
+                <h1 class="text-2xl font-bold mb-4">Profile</h1>
+                <p class="text-gray-700">Username: { user.Username }</p>
+                <p class="text-gray-700">Email: { user.Email }</p>
 
-            <!-- Форма для загрузки файла -->
-            <form 
-                action="/profile/upload" 
-                method="POST" 
-                enctype="multipart/form-data" 
-                class="mt-6 space-y-4"
-            >
-                <div>
-                    <label class="block font-medium mb-1" for="file">Upload file:</label>
-                    <input 
-                        class="border border-gray-300 p-2 w-full" 
-                        type="file" 
-                        id="file" 
-                        name="file"
-                        required
-                    />
-                </div>
-                <button 
-                    class="btn btn-primary" 
-                    type="submit"
+                <!-- Форма загрузки -->
+                <form 
+                    action="/profile/upload" 
+                    method="POST" 
+                    enctype="multipart/form-data" 
+                    class="mt-6 space-y-4"
                 >
-                    Upload
-                </button>
-            </form>
+                    <div>
+                        <label class="block font-medium mb-1" for="file">Upload file:</label>
+                        <input 
+                            class="border border-gray-300 p-2 w-full" 
+                            type="file" 
+                            id="file" 
+                            name="file"
+                            required
+                        />
+                    </div>
+                    <button class="btn btn-primary" type="submit">Upload</button>
+                </form>
 
-            <!-- Здесь же (или ниже) выведем список файлов пользователя -->
-            <div class="mt-10">
-                <h2 class="text-xl font-bold mb-2">Your files</h2>
-                <ul>
-                    <!-- Допустим, мы будем передавать список файлов из handler и выводить его здесь -->
-                    <!-- Пример статичной заглушки, которую заменим на динамическую: -->
-                    <!--
-                    <li>file1.png (link to download)</li>
-                    <li>document.pdf (link to download)</li>
-                    -->
-                </ul>
+                <!-- Список файлов -->
+                <div class="mt-10">
+                    <h2 class="text-xl font-bold mb-2">Your files</h2>
+                    // <ul>
+                    //     for _, file := range files {
+                    //         <li class="flex items-center gap-2 py-2">
+                    //             <span class="flex-grow">{ file.FileName }</span>
+                    //             <a href={ templ.URL("/profile/files/download?file_id=" + fmt.Sprintf("%d", file.ID)) } 
+                    //                class="text-blue-500 hover:underline px-2">
+                    //                Download
+                    //             </a>
+                    //             <button 
+                    //                 type="button"
+                    //                 data-hx-delete={ "/profile/files/delete?file_id=" + fmt.Sprintf("%d", file.ID) }
+                    //                 data-hx-confirm="Are you sure you want to delete this file?"
+                    //                 class="text-red-500 hover:underline px-2"
+                    //             >
+                    //                 Delete
+                    //             </button>
+                    //         </li>
+                    //     }
+                    // </ul>
+
+                    //ещё одна реализация
+
+                    <ul>
+                        for _, file := range files {
+                            <li>
+                                { file.FileName } (
+                                    <a href={ templ.URL(file.DownloadURL) }>download</a>
+                                    |
+                                    <form method="POST" action={ templ.URL(file.DeleteURL) } style="display:inline;">
+                                        <button type="submit" onclick="return confirm('Delete this file?');">delete</button>
+                                    </form>
+                                )
+                            </li>
+                        }
+                    </ul>
+                </div>
             </div>
-        </div>
 
-        <div class="flex flex-col items-center">
-            <div 
-                id="graph-container" 
-                class="w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6"
-                data-username={ user.Username }
-            ></div>
-        </div>
+            <!-- График -->
+            <div class="flex flex-col items-center mt-8">
+                <div 
+                    id="graph-container" 
+                    class="w-full h-[600px] border rounded-lg bg-white shadow-lg mx-auto my-6"
+                    data-username={ user.Username }
+                ></div>
+            </div>
+        </main>
     }
 }

@@ -45,6 +45,8 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
         r.Get("/profile", handler(auth.handleProfile))
         r.Post("/logout", handler(auth.handleLogout))
 
+        r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
+        r.Get("/profile/files/download", handler(fileHandler.handleDownloadFile))
         r.Post("/profile/upload", handler(fileHandler.handleFileUpload)) // <-- Новое
     })
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -150,6 +151,12 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
     files, err := h.UserService.GetUserFiles(r.Context(), user.ID)
     if err != nil {
         return err
+    }
+
+        // Подготовим URL для каждого файла
+    for i := range files {
+        files[i].DownloadURL = fmt.Sprintf("/profile/files/download?file_id=%d", files[i].ID)
+        files[i].DeleteURL = fmt.Sprintf("/profile/files/delete?file_id=%d", files[i].ID)
     }
 
 

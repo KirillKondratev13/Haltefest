@@ -25,6 +25,8 @@ type UserFile struct {
     FileSize  int64
     FileType  string
     CreatedAt time.Time
+    DownloadURL string
+    DeleteURL  string
 }
 
 type UserService struct {

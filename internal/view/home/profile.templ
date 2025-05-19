@@ -6,7 +6,9 @@ import (
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
 
-templ Profile(user *service.User, files []service.UserFile) {
+
+
+templ Profile(user *service.User, files []service.UserFile, fileData any) {
     @layout.Base(layout.BaseProps{
         Title: "Profile",
         User: user,
@@ -41,27 +43,7 @@ templ Profile(user *service.User, files []service.UserFile) {
                 <!-- Список файлов -->
                 <div class="mt-10">
                     <h2 class="text-xl font-bold mb-2">Your files</h2>
-                    // <ul>
-                    //     for _, file := range files {
-                    //         <li class="flex items-center gap-2 py-2">
-                    //             <span class="flex-grow">{ file.FileName }</span>
-                    //             <a href={ templ.URL("/profile/files/download?file_id=" + fmt.Sprintf("%d", file.ID)) } 
-                    //                class="text-blue-500 hover:underline px-2">
-                    //                Download
-                    //             </a>
-                    //             <button 
-                    //                 type="button"
-                    //                 data-hx-delete={ "/profile/files/delete?file_id=" + fmt.Sprintf("%d", file.ID) }
-                    //                 data-hx-confirm="Are you sure you want to delete this file?"
-                    //                 class="text-red-500 hover:underline px-2"
-                    //             >
-                    //                 Delete
-                    //             </button>
-                    //         </li>
-                    //     }
-                    // </ul>
 
-                    //ещё одна реализация
 
                     <ul>
                         for _, file := range files {
@@ -78,6 +60,9 @@ templ Profile(user *service.User, files []service.UserFile) {
                     </ul>
                 </div>
             </div>
+            
+
+            @templ.JSONScript("file-data", fileData)
 
             <!-- График -->
             <div class="flex flex-col items-center mt-8">

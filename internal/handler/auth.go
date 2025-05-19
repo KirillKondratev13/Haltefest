@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +15,21 @@ import (
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/view/home"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type FileData struct {
+    Files    []FileJSON `json:"files"`
+    Username string     `json:"username"`
+}
+
+type FileJSON struct {
+    ID         int    `json:"ID"`
+    FileName   string `json:"FileName"`
+    FileType   string `json:"FileType"`
+    FileSize   int64  `json:"FileSize"`
+    CreatedAt  string `json:"CreatedAt"`
+    DownloadURL string `json:"DownloadURL"`
+    DeleteURL  string `json:"DeleteURL"`
+}
 
 type AuthHandler struct {
     UserService *service.UserService
@@ -153,6 +170,33 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
         return err
     }
 
+    // Конвертация файлов в JSON-структуры
+    filesJSON := make([]FileJSON, 0, len(files))
+    for _, f := range files {
+        filesJSON = append(filesJSON, FileJSON{
+            ID:         f.ID,
+            FileName:   f.FileName,
+            FileType:   f.FileType,
+            FileSize:   f.FileSize,
+            CreatedAt:  f.CreatedAt.Format("2006-01-02 15:04:05"),
+            DownloadURL: fmt.Sprintf("/profile/files/download?file_id=%d", f.ID),//f.DownloadURL,
+            DeleteURL:  fmt.Sprintf("/profile/files/delete?file_id=%d", f.ID),
+        })
+    }
+
+    fileData := FileData{
+        Files:    filesJSON,
+        Username: user.Username,
+    }
+
+    // Сериализуем в JSON с экранированием
+    jsonData, err := json.Marshal(fileData)
+    if err != nil {
+        log.Printf("JSON Marshal error: %v", err)
+    }
+    // Добавьте лог для проверки результата
+    log.Printf("Generated JSON: %s", jsonData)
+
         // Подготовим URL для каждого файла
     for i := range files {
         files[i].DownloadURL = fmt.Sprintf("/profile/files/download?file_id=%d", files[i].ID)
@@ -160,7 +204,7 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
     }
 
 
-    return home.Profile(user, files).Render(r.Context(), w)  // Теперь передаём *service.User
+    return home.Profile(user, files, fileData).Render(r.Context(), w)  // Теперь передаём *service.User
 }
 
 

@@ -73,7 +73,7 @@ func Profile(user *service.User, files []service.UserFile, fileData any) templ.C
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</p><!-- Форма загрузки --><form action=\"/profile/upload\" method=\"POST\" enctype=\"multipart/form-data\" class=\"mt-6 space-y-4\"><div><label class=\"block font-medium mb-1\" for=\"file\">Upload file:</label> <input class=\"border border-gray-300 p-2 w-full\" type=\"file\" id=\"file\" name=\"file\" required></div><button class=\"btn btn-primary\" type=\"submit\">Upload</button></form><!-- Список файлов --><div class=\"mt-10\"><h2 class=\"text-xl font-bold mb-2\">Your files</h2><ul>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</p><!-- Форма загрузки --><form id=\"uploadForm\" enctype=\"multipart/form-data\" class=\"mt-6 space-y-4\"><div><label class=\"block font-medium mb-1\" for=\"file\">Upload file:</label> <input class=\"border border-gray-300 p-2 w-full\" type=\"file\" id=\"file\" name=\"file\" required></div><button class=\"btn btn-primary\" type=\"submit\">Upload</button><div class=\"w-full bg-gray-200 rounded mt-2 h-3\"><div id=\"uploadProgress\" class=\"bg-blue-500 h-3 rounded\" style=\"width: 0%;\"></div></div><div id=\"uploadStatus\" class=\"text-sm mt-1\"></div></form><!-- Список файлов --><div class=\"mt-10\"><h2 class=\"text-xl font-bold mb-2\">Your files</h2><ul>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -85,7 +85,7 @@ func Profile(user *service.User, files []service.UserFile, fileData any) templ.C
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(file.FileName)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 51, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 55, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -129,7 +129,7 @@ func Profile(user *service.User, files []service.UserFile, fileData any) templ.C
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(user.Username)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 72, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/view/home/profile.templ`, Line: 76, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {

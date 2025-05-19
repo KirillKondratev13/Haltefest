@@ -1,7 +1,6 @@
 ﻿package handler
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -58,7 +57,6 @@ func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, origin
     }
 }
 
-
 func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) error {
     user := getUserFromContext(r)
     if user == nil {
@@ -66,6 +64,7 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
         return nil
     }
 
+    // ParseMultipartForm не нужен для стриминга, но нужен для FormFile
     err := r.ParseMultipartForm(32 << 20)
     if err != nil {
         http.Error(w, "Error parsing form data", http.StatusBadRequest)
@@ -79,43 +78,42 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
     }
     defer file.Close()
 
-    // Считаем всё в память (пока для простоты)
-    fileBytes, err := io.ReadAll(file)
-    if err != nil {
-        http.Error(w, "Failed to read file content", http.StatusInternalServerError)
-        return nil
-    }
-
     originalFileName := header.Filename
     fileType := header.Header.Get("Content-Type")
     if fileType == "" {
         fileType = "application/octet-stream"
     }
 
-    // Находим уникальное имя для этого пользователя
+    // Получаем уникальное имя
     finalName, err := fh.getUniqueFileName(r.Context(), user.ID, originalFileName)
     if err != nil {
         http.Error(w, "Error checking unique filename", http.StatusInternalServerError)
         return nil
     }
 
-    // Формируем путь в Filer
-    // например, если finalName = "тест мад(1).PNG", тогда filerPath="/user_3/тест мад(1).PNG"
     filerPath := fmt.Sprintf("/user_%d/%s", user.ID, finalName)
-
-    // Шлём файл в Filer
     uploadURL := fmt.Sprintf("%s%s", fh.FilerURL, filerPath)
 
-    var buf bytes.Buffer
-    mw := multipart.NewWriter(&buf)
-    fw, err := mw.CreateFormFile("file", finalName)
-    if err != nil {
-        return err
-    }
-    _, err = fw.Write(fileBytes)
-    mw.Close()
+    // Стримим файл напрямую в SeaweedFS
+    pr, pw := io.Pipe()
+    mw := multipart.NewWriter(pw)
 
-    req, err := http.NewRequest("POST", uploadURL, &buf)
+    go func() {
+        defer pw.Close()
+        fw, err := mw.CreateFormFile("file", finalName)
+        if err != nil {
+            pw.CloseWithError(err)
+            return
+        }
+        _, err = io.Copy(fw, file)
+        if err != nil {
+            pw.CloseWithError(err)
+            return
+        }
+        mw.Close()
+    }()
+
+    req, err := http.NewRequest("POST", uploadURL, pr)
     if err != nil {
         return err
     }
@@ -132,8 +130,11 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
         return fmt.Errorf("filer upload error: %s", string(bodyBytes))
     }
 
-    // Запишем метаданные
-    fileSize := int64(len(fileBytes))
+    // Попробуем взять размер из header, если не получилось — ставим 0 (или реализуй подсчет через TeeReader)
+    fileSize := header.Size
+    fmt.Println()
+    fmt.Println(filerPath, finalName)
+    fmt.Println()
     now := time.Now()
     _, err = fh.UserService.DB.Exec(r.Context(),
         `INSERT INTO files (user_id, file_name, file_path, file_size, file_type, created_at)
@@ -143,7 +144,96 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
         return err
     }
 
-    http.Redirect(w, r, "/profile", http.StatusSeeOther)
+    // Для XHR — просто 200 OK (без редиректа)
+    w.WriteHeader(http.StatusOK)
     return nil
 }
+
+// func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) error {
+//     user := getUserFromContext(r)
+//     if user == nil {
+//         http.Error(w, "Unauthorized", http.StatusUnauthorized)
+//         return nil
+//     }
+
+//     err := r.ParseMultipartForm(32 << 20)
+//     if err != nil {
+//         http.Error(w, "Error parsing form data", http.StatusBadRequest)
+//         return nil
+//     }
+
+//     file, header, err := r.FormFile("file")
+//     if err != nil {
+//         http.Error(w, "File not found in form", http.StatusBadRequest)
+//         return nil
+//     }
+//     defer file.Close()
+
+//     // Считаем всё в память (пока для простоты)
+//     fileBytes, err := io.ReadAll(file)
+//     if err != nil {
+//         http.Error(w, "Failed to read file content", http.StatusInternalServerError)
+//         return nil
+//     }
+
+//     originalFileName := header.Filename
+//     fileType := header.Header.Get("Content-Type")
+//     if fileType == "" {
+//         fileType = "application/octet-stream"
+//     }
+
+//     // Находим уникальное имя для этого пользователя
+//     finalName, err := fh.getUniqueFileName(r.Context(), user.ID, originalFileName)
+//     if err != nil {
+//         http.Error(w, "Error checking unique filename", http.StatusInternalServerError)
+//         return nil
+//     }
+
+//     // Формируем путь в Filer
+//     // например, если finalName = "тест мад(1).PNG", тогда filerPath="/user_3/тест мад(1).PNG"
+//     filerPath := fmt.Sprintf("/user_%d/%s", user.ID, finalName)
+
+//     // Шлём файл в Filer
+//     uploadURL := fmt.Sprintf("%s%s", fh.FilerURL, filerPath)
+
+//     var buf bytes.Buffer
+//     mw := multipart.NewWriter(&buf)
+//     fw, err := mw.CreateFormFile("file", finalName)
+//     if err != nil {
+//         return err
+//     }
+//     _, err = fw.Write(fileBytes)
+//     mw.Close()
+
+//     req, err := http.NewRequest("POST", uploadURL, &buf)
+//     if err != nil {
+//         return err
+//     }
+//     req.Header.Set("Content-Type", mw.FormDataContentType())
+
+//     resp, err := http.DefaultClient.Do(req)
+//     if err != nil {
+//         return err
+//     }
+//     defer resp.Body.Close()
+
+//     if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+//         bodyBytes, _ := io.ReadAll(resp.Body)
+//         return fmt.Errorf("filer upload error: %s", string(bodyBytes))
+//     }
+
+//     // Запишем метаданные
+//     fileSize := int64(len(fileBytes))
+//     now := time.Now()
+//     _, err = fh.UserService.DB.Exec(r.Context(),
+//         `INSERT INTO files (user_id, file_name, file_path, file_size, file_type, created_at)
+//          VALUES ($1, $2, $3, $4, $5, $6)`,
+//         user.ID, finalName, filerPath, fileSize, fileType, now)
+//     if err != nil {
+//         return err
+//     }
+
+//     http.Redirect(w, r, "/profile", http.StatusSeeOther)
+//     return nil
+// }
 

@@ -22,9 +22,8 @@ templ Profile(user *service.User, files []service.UserFile, fileData any) {
 
                 <!-- Форма загрузки -->
                 <form 
-                    action="/profile/upload" 
-                    method="POST" 
-                    enctype="multipart/form-data" 
+                    id="uploadForm"
+                    enctype="multipart/form-data"
                     class="mt-6 space-y-4"
                 >
                     <div>
@@ -38,7 +37,12 @@ templ Profile(user *service.User, files []service.UserFile, fileData any) {
                         />
                     </div>
                     <button class="btn btn-primary" type="submit">Upload</button>
+                    <div class="w-full bg-gray-200 rounded mt-2 h-3">
+                        <div id="uploadProgress" class="bg-blue-500 h-3 rounded" style="width: 0%;"></div>
+                    </div>
+                    <div id="uploadStatus" class="text-sm mt-1"></div>
                 </form>
+
 
                 <!-- Список файлов -->
                 <div class="mt-10">

@@ -11,8 +11,7 @@
 
 # Frontend assets
 /web/public/assets/
-/web/src/**/*.css
-/web/src/**/*.js
+
 
 # Templ generated files
 *_templ.go

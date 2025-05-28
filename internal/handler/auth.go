@@ -179,7 +179,7 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
             FileType:   f.FileType,
             FileSize:   f.FileSize,
             CreatedAt:  f.CreatedAt.Format("2006-01-02 15:04:05"),
-            DownloadURL: fmt.Sprintf("/profile/files/download?file_id=%d", f.ID),//f.DownloadURL,
+            DownloadURL: fmt.Sprintf("/profile/files/download?file_id=%d", f.ID),//f.DownloadURL, 
             DeleteURL:  fmt.Sprintf("/profile/files/delete?file_id=%d", f.ID),
         })
     }

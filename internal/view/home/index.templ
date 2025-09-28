@@ -5,16 +5,51 @@ import (
     "github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
 )
 
-templ Index(user *service.User) {
+templ Index(user *service.User, graphData interface{}) {
     @layout.Base(layout.BaseProps{
         Title: "Main Page",
-        User: user,
+        User:  user,
     }) {
         <div class="p-4">
-            <h1 class="text-2xl font-bold">Welcome to my app!</h1>
+            <h1 class="text-2xl font-bold">Добро пожаловать в мир унифицированных данных!</h1>
             if user != nil {
                 <p class="mt-2">Hello, { user.Username }!</p>
             }
+            <p></p>
+             <p class="text-lg mt-4">Этот сайт позволяет пользователям работать с файлами в унифицированном формате.</p>
+             <p class="text-lg mt-4">Вы можете загружать файлы разных типов, размеров, количества.</p>
+             <p class="text-lg mt-4">После загрузки ваши файлы будут отображать в унифицированном формате в виде графа, листья(конечные узлы) которого - файлы.</p>
+             <p class="text-lg mt-4">Каждый файл будет связан со свой категорией, которая определяется автоматически!.</p>
+             <p class="text-lg mt-4">Пройдите регистрацию и попробуйте сами!.</p>
+             <p class="text-lg mt-4">Снизу представлен пример работы.</p>
+            <div id="graphContainer" class="mt-4"></div>
+            <p class="text-lg mt-4">Пример графа.</p>
         </div>
+        <script>
+            var nodes = new vis.DataSet([
+                { id: 1, label: 'Username', shape: 'box' },
+                { id: 2, label: 'Category A' },
+                { id: 3, label: 'Category B' },
+                { id: 4, label: 'File 1' },
+                { id: 5, label: 'File 2' },
+                { id: 6, label: 'File 3' }
+            ]);
+
+            var edges = new vis.DataSet([
+                { from: 1, to: 2 },
+                { from: 1, to: 3 },
+                { from: 2, to: 4 },
+                { from: 3, to: 5 },
+                { from: 3, to: 6 }
+            ]);
+
+            var container = document.getElementById('graphContainer');
+            var data = {
+                nodes: nodes,
+                edges: edges
+            };
+            var options = {};
+            var network = new vis.Network(container, data, options);
+        </script>
     }
 }

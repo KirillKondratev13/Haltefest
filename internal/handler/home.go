@@ -10,7 +10,7 @@ type homeHandler struct{}
 
 func (h *homeHandler) handlerIndex(w http.ResponseWriter, r *http.Request) error {
     user := getUserFromContext(r)
-    return home.Index(user).Render(r.Context(), w)
+    return home.Index(user, getGraphData).Render(r.Context(), w)
 }
 
 func (h *homeHandler) handleAbout(w http.ResponseWriter, r *http.Request) error {
@@ -19,3 +19,8 @@ func (h *homeHandler) handleAbout(w http.ResponseWriter, r *http.Request) error 
 }
 
 
+func getGraphData() interface{} {
+    // Здесь может быть создание данных графа
+    // Пока возвращаем пустой объект, если не нужно
+    return nil
+}

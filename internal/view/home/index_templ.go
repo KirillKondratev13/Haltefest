@@ -13,7 +13,7 @@ import (
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
 )
 
-func Index(user *service.User) templ.Component {
+func Index(user *service.User, graphData interface{}) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -46,7 +46,7 @@ func Index(user *service.User) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"p-4\"><h1 class=\"text-2xl font-bold\">Welcome to my app!</h1>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"p-4\"><h1 class=\"text-2xl font-bold\">Добро пожаловать в мир унифицированных данных!</h1>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -69,7 +69,7 @@ func Index(user *service.User) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p></p><p class=\"text-lg mt-4\">Этот сайт позволяет пользователям работать с файлами в унифицированном формате.</p><p class=\"text-lg mt-4\">Вы можете загружать файлы разных типов, размеров, количества.</p><p class=\"text-lg mt-4\">После загрузки ваши файлы будут отображать в унифицированном формате в виде графа, листья(конечные узлы) которого - файлы.</p><p class=\"text-lg mt-4\">Каждый файл будет связан со свой категорией, которая определяется автоматически!.</p><p class=\"text-lg mt-4\">Пройдите регистрацию и попробуйте сами!.</p><p class=\"text-lg mt-4\">Снизу представлен пример работы.</p><div id=\"graphContainer\" class=\"mt-4\"></div><p class=\"text-lg mt-4\">Пример графа.</p></div><script>\n            var nodes = new vis.DataSet([\n                { id: 1, label: 'Username', shape: 'box' },\n                { id: 2, label: 'Category A' },\n                { id: 3, label: 'Category B' },\n                { id: 4, label: 'File 1' },\n                { id: 5, label: 'File 2' },\n                { id: 6, label: 'File 3' }\n            ]);\n\n            var edges = new vis.DataSet([\n                { from: 1, to: 2 },\n                { from: 1, to: 3 },\n                { from: 2, to: 4 },\n                { from: 3, to: 5 },\n                { from: 3, to: 6 }\n            ]);\n\n            var container = document.getElementById('graphContainer');\n            var data = {\n                nodes: nodes,\n                edges: edges\n            };\n            var options = {};\n            var network = new vis.Network(container, data, options);\n        </script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

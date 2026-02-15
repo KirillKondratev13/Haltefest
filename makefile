@@ -1,4 +1,5 @@
 ﻿BINPATH = bin/myapp
+TEMPL = $(HOME)/go/bin/templ
 
 .PHONY: build
 build: build-templ build-app build-css build-js
@@ -9,7 +10,7 @@ build-app:
 
 .PHONY: build-templ
 build-templ:
-	templ generate
+	$(TEMPL) generate
 
 .PHONY: build-css
 build-css:
@@ -37,7 +38,7 @@ watch-app:
 
 .PHONY: watch-templ
 watch-templ:
-				templ generate \
+				$(TEMPL) generate \
 				--watch \
 				--proxy="http://localhost:8081" \
 				--open-browser=false
@@ -52,4 +53,4 @@ watch-js:
 
 .PHONY: fmt
 fmt:
-	templ fmt internal/view
+	$(TEMPL) fmt internal/view

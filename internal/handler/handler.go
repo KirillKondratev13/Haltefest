@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/Cyr1ll/golang-templ-htmx-app/internal/config"
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service" // Импортируем service
 	"github.com/go-chi/chi/v5"
 )
@@ -11,6 +12,7 @@ import (
 type Dependencies struct {
     AssetsFS   http.FileSystem
     UserService *service.UserService // Используем UserService из service
+    Config      config.Config
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -26,7 +28,7 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
     fileHandler := FileHandler{
         UserService: deps.UserService,
         // пусть пока хардкод (или возьмите из config)
-        FilerURL: "http://localhost:8888",
+        FilerURL: deps.Config.FilerURL,
     }
 
     // Добавляем sessionMiddleware ко всем маршрутам

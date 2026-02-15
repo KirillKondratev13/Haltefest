@@ -1,0 +1,8 @@
+.git
+.idea
+.vscode
+bin
+tmp
+seaweedfs_data
+web/node_modules
+web/public/assets

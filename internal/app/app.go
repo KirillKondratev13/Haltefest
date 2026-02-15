@@ -32,7 +32,7 @@ func Run(ctx context.Context) error {
     handler.RegisterRoutes(r, handler.Dependencies{
         AssetsFS:     http.Dir(cfg.AssetsDir),
         UserService:  userService,
-
+        Config:       cfg,
     })
 
     s := http.Server{

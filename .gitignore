@@ -4,17 +4,14 @@
 
 # Go
 /go.sum
+*_templ.go
 
 # Node.js
-/web/node_modules/
-/web/package-lock.json
+web/node_modules/
+web/package-lock.json
 
 # Frontend assets
-/web/public/assets/
-
-
-# Templ generated files
-*_templ.go
+web/public/assets/
 
 
 # IDE specific files
@@ -32,7 +29,8 @@
 ehthumbs.db
 Thumbs.db
 
-/seaweedfs_data/
+# Data
+seaweedfs_data/
 
 # Environment files
 .env

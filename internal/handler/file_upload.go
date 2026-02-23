@@ -79,9 +79,21 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
     defer file.Close()
 
     originalFileName := header.Filename
-    fileType := header.Header.Get("Content-Type")
-    if fileType == "" {
-        fileType = "application/octet-stream"
+
+    // Определяем тип файла по magic bytes (первые 512 байт)
+    buffer := make([]byte, 512)
+    n, err := file.Read(buffer)
+    if err != nil && err != io.EOF {
+        http.Error(w, "Error reading file header", http.StatusInternalServerError)
+        return nil
+    }
+    fileType := http.DetectContentType(buffer[:n])
+
+    // Сбрасываем указатель в начало файла
+    _, err = file.Seek(0, io.SeekStart)
+    if err != nil {
+        http.Error(w, "Error resetting file pointer", http.StatusInternalServerError)
+        return nil
     }
 
     // Получаем уникальное имя

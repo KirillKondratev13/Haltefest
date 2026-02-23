@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
@@ -17,7 +18,9 @@ type FileHandler struct {
     UserService *service.UserService
     FileService *service.FileService
     FilerURL    string
+    KafkaWriter KafkaWriter
 }
+
 
 func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, originalName string) (string, error) {
     // Разделим имя файла на "название + расширение"
@@ -146,7 +149,7 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
     fileSize := header.Size
     now := time.Now()
     
-    err = fh.FileService.SaveFile(r.Context(), service.UserFile{
+    fileID, err := fh.FileService.SaveFile(r.Context(), service.UserFile{
         UserID:    user.ID,
         FileName:  finalName,
         FilePath:  filerPath,
@@ -156,6 +159,17 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
     })
     if err != nil {
         return err
+    }
+
+    // Emit Kafka event for parsing pipeline
+    payload := map[string]interface{}{
+        "file_id":   fileID,
+        "s3_path":   filerPath,
+        "mime_type": fileType,
+    }
+    if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
+        slog.Error("failed to emit kafka event", "error", err, "file_id", fileID)
+        // We don't fail the upload if Kafka is down, but we log it.
     }
 
     // Для XHR — просто 200 OK (без редиректа)

@@ -1,6 +1,7 @@
 ﻿package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -12,8 +13,13 @@ import (
 type Dependencies struct {
     AssetsFS    http.FileSystem
     UserService *service.UserService
-    FileService *service.FileService // Добавили FileService
-    Config      config.Config
+	FileService *service.FileService // Добавили FileService
+	Config      config.Config
+	KafkaWriter KafkaWriter // New interface for Kafka
+}
+
+type KafkaWriter interface {
+	WriteMessages(ctx context.Context, msgs ...interface{}) error
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -30,6 +36,7 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
         UserService: deps.UserService,
         FileService: deps.FileService, // Передаем FileService
         FilerURL:    deps.Config.FilerURL,
+        KafkaWriter: deps.KafkaWriter,
     }
 
     r.Use(auth.sessionMiddleware)

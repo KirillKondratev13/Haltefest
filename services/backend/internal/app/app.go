@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,11 +13,30 @@ import (
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service" // Импортируем service
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+type kafkaProducer struct {
+	writer *kafka.Writer
+}
+
+func (kp *kafkaProducer) WriteMessages(ctx context.Context, msgs ...interface{}) error {
+	kmsgs := make([]kafka.Message, len(msgs))
+	for i, m := range msgs {
+		val, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		kmsgs[i] = kafka.Message{
+			Value: val,
+		}
+	}
+	return kp.writer.WriteMessages(ctx, kmsgs...)
+}
 
 func Run(ctx context.Context) error {
     cfg := config.NewConfig()
@@ -39,12 +59,23 @@ func Run(ctx context.Context) error {
     userService := &service.UserService{DB: dbpool}
     fileService := &service.FileService{DB: dbpool}
 
+    // Инициализация Kafka
+    kafkaWriter := &kafka.Writer{
+        Addr:     kafka.TCP(cfg.KafkaBrokers),
+        Topic:    "files-to-parse",
+        Balancer: &kafka.LeastBytes{},
+    }
+    defer kafkaWriter.Close()
+
+    kp := &kafkaProducer{writer: kafkaWriter}
+
     r := chi.NewRouter()
     handler.RegisterRoutes(r, handler.Dependencies{
         AssetsFS:    http.Dir(cfg.AssetsDir),
         UserService: userService,
         FileService: fileService,
         Config:      cfg,
+        KafkaWriter: kp,
     })
 
     s := http.Server{

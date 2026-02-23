@@ -26,12 +26,14 @@ type FileService struct {
     DB *pgxpool.Pool
 }
 
-func (s *FileService) SaveFile(ctx context.Context, f UserFile) error {
-    _, err := s.DB.Exec(ctx, `
+func (s *FileService) SaveFile(ctx context.Context, f UserFile) (int, error) {
+    var id int
+    err := s.DB.QueryRow(ctx, `
         INSERT INTO files (user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `, f.UserID, f.FileName, f.FilePath, f.FileSize, f.FileType, f.Status, f.Tag, f.ErrorMsg, f.CreatedAt)
-    return err
+        RETURNING id
+    `, f.UserID, f.FileName, f.FilePath, f.FileSize, f.FileType, f.Status, f.Tag, f.ErrorMsg, f.CreatedAt).Scan(&id)
+    return id, err
 }
 
 func (s *FileService) GetUserFiles(ctx context.Context, userID int) ([]UserFile, error) {

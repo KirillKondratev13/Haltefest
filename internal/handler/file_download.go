@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
 )
 
 func (fh *FileHandler) handleDownloadFile(w http.ResponseWriter, r *http.Request) error {
@@ -31,20 +30,9 @@ func (fh *FileHandler) handleDownloadFile(w http.ResponseWriter, r *http.Request
     }
 
     // Достаем запись из БД
-    var f service.UserFile
-    err = fh.UserService.DB.QueryRow(r.Context(),
-        `SELECT id, user_id, file_name, file_path, file_size, file_type, created_at
-         FROM files
-         WHERE id = $1`, fileID,
-    ).Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.CreatedAt)
+    f, err := fh.FileService.GetFileByID(r.Context(), fileID, user.ID)
     if err != nil {
-        http.Error(w, "File not found", http.StatusNotFound)
-        return nil
-    }
-
-    // Проверим, что файл принадлежит текущему пользователю
-    if f.UserID != user.ID {
-        http.Error(w, "Forbidden", http.StatusForbidden)
+        http.Error(w, "Файл не найден или доступ запрещен", http.StatusNotFound)
         return nil
     }
 

@@ -10,8 +10,9 @@ import (
 )
 
 type Dependencies struct {
-    AssetsFS   http.FileSystem
-    UserService *service.UserService // Используем UserService из service
+    AssetsFS    http.FileSystem
+    UserService *service.UserService
+    FileService *service.FileService // Добавили FileService
     Config      config.Config
 }
 
@@ -20,18 +21,17 @@ type handlerFunc func(http.ResponseWriter, *http.Request) error
 func RegisterRoutes(r *chi.Mux, deps Dependencies) {
     home := homeHandler{}
 
-    
     auth := AuthHandler{
         UserService: deps.UserService,
-    }
-    // Инициализируем FileHandler
-    fileHandler := FileHandler{
-        UserService: deps.UserService,
-        // пусть пока хардкод (или возьмите из config)
-        FilerURL: deps.Config.FilerURL,
+        FileService: deps.FileService, // Передаем FileService в AuthHandler
     }
 
-    // Добавляем sessionMiddleware ко всем маршрутам
+    fileHandler := FileHandler{
+        UserService: deps.UserService,
+        FileService: deps.FileService, // Передаем FileService
+        FilerURL:    deps.Config.FilerURL,
+    }
+
     r.Use(auth.sessionMiddleware)
 
     r.Get("/", handler(home.handlerIndex))
@@ -41,7 +41,6 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
     r.Get("/login", handler(auth.handleLoginPage))
     r.Post("/login", handler(auth.handleLogin))
 
-    // Защищенные маршруты
     r.Group(func(r chi.Router) {
         r.Use(auth.authMiddleware)
         r.Get("/profile", handler(auth.handleProfile))
@@ -49,13 +48,11 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 
         r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
         r.Get("/profile/files/download", handler(fileHandler.handleDownloadFile))
-        r.Post("/profile/upload", handler(fileHandler.handleFileUpload)) // <-- Новое
+        r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
     })
 
     r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
 }
-
-
 
 func handler(h handlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
@@ -66,5 +63,7 @@ func handler(h handlerFunc) http.HandlerFunc {
 }
 
 func handleError(w http.ResponseWriter, r *http.Request, err error) {
-    slog.Error("error during request", slog.String("err", err.Error()))
+    slog.Error("error during request", slog.String("err", err.Error()), slog.String("path", r.URL.Path))
+    // Отправляем 500 ошибку клиенту, чтобы он не видел пустой экран
+    http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 }

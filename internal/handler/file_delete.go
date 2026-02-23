@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
 )
 
 func (fh *FileHandler) handleDeleteFile(w http.ResponseWriter, r *http.Request) error {
@@ -28,24 +27,13 @@ func (fh *FileHandler) handleDeleteFile(w http.ResponseWriter, r *http.Request) 
         return nil
     }
 
-    var f service.UserFile
-    err = fh.UserService.DB.QueryRow(r.Context(),
-        `SELECT id, user_id, file_name, file_path, file_size, file_type, created_at
-         FROM files
-         WHERE id = $1`, fileID,
-    ).Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.CreatedAt)
+    f, err := fh.FileService.GetFileByID(r.Context(), fileID, user.ID)
     if err != nil {
-        http.Error(w, "File not found", http.StatusNotFound)
-        return nil
-    }
-
-    if f.UserID != user.ID {
-        http.Error(w, "Forbidden", http.StatusForbidden)
+        http.Error(w, "Файл не найден или доступ запрещен", http.StatusNotFound)
         return nil
     }
 
     // Отправляем DELETE в Filer
-    // SeaweedFS Filer понимает DELETE /path
     req, err := http.NewRequest("DELETE", fh.FilerURL+f.FilePath, nil)
     if err != nil {
         return err
@@ -53,7 +41,7 @@ func (fh *FileHandler) handleDeleteFile(w http.ResponseWriter, r *http.Request) 
 
     resp, err := http.DefaultClient.Do(req)
     if err != nil {
-        http.Error(w, "Failed to delete file from filer", http.StatusInternalServerError)
+        http.Error(w, "Не удалось удалить файл из хранилища", http.StatusInternalServerError)
         return nil
     }
     defer resp.Body.Close()
@@ -64,8 +52,7 @@ func (fh *FileHandler) handleDeleteFile(w http.ResponseWriter, r *http.Request) 
     }
 
     // Удаляем запись из БД
-    _, err = fh.UserService.DB.Exec(r.Context(),
-        "DELETE FROM files WHERE id = $1", fileID)
+    err = fh.FileService.DeleteFile(r.Context(), fileID, user.ID)
     if err != nil {
         return err
     }

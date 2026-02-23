@@ -33,6 +33,7 @@ type FileJSON struct {
 
 type AuthHandler struct {
     UserService *service.UserService
+    FileService *service.FileService // Добавили FileService
 }
 
 type contextKey string
@@ -164,8 +165,8 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
         return nil
     }
     
-    // Получаем список файлов
-    files, err := h.UserService.GetUserFiles(r.Context(), user.ID)
+    // Получаем список файлов через FileService
+    files, err := h.FileService.GetUserFiles(r.Context(), user.ID)
     if err != nil {
         return err
     }

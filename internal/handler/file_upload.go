@@ -15,8 +15,8 @@ import (
 // FileHandler будет хранить зависимости: UserService, FileService (если нужно), и URL Filer'а.
 type FileHandler struct {
     UserService *service.UserService
-    // Дополнительно: чтобы не хардкодить url Filer’а, можно хранить его в config.
-    FilerURL string // Например: "http://localhost:8888"
+    FileService *service.FileService
+    FilerURL    string
 }
 
 func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, originalName string) (string, error) {
@@ -33,7 +33,7 @@ func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, origin
         pathToCheck := fmt.Sprintf("/user_%d/%s", userID, finalName)
 
         var exists bool
-        err := fh.UserService.DB.QueryRow(ctx,
+        err := fh.FileService.DB.QueryRow(ctx,
             `SELECT EXISTS(
                 SELECT 1 FROM files
                 WHERE user_id = $1
@@ -144,14 +144,16 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 
     // Попробуем взять размер из header, если не получилось — ставим 0 (или реализуй подсчет через TeeReader)
     fileSize := header.Size
-    fmt.Println()
-    fmt.Println(filerPath, finalName)
-    fmt.Println()
     now := time.Now()
-    _, err = fh.UserService.DB.Exec(r.Context(),
-        `INSERT INTO files (user_id, file_name, file_path, file_size, file_type, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        user.ID, finalName, filerPath, fileSize, fileType, now)
+    
+    err = fh.FileService.SaveFile(r.Context(), service.UserFile{
+        UserID:    user.ID,
+        FileName:  finalName,
+        FilePath:  filerPath,
+        FileSize:  fileSize,
+        FileType:  fileType,
+        CreatedAt: now,
+    })
     if err != nil {
         return err
     }

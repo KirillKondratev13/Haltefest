@@ -18,14 +18,8 @@ docker-compose up --build
 
 The application will be available at: `http://localhost:8081`
 
-### Running Migrations
-Since the database is fresh, you need to apply migrations. You can do this via the running Postgres container:
-
-```bash
-# Apply migrations
-docker exec -i myapp-postgres psql -U myappuser -d myapp < internal/migrations/000001_init_users.up.sql
-docker exec -i myapp-postgres psql -U myappuser -d myapp < internal/migrations/000002_add_files_table.up.sql
-```
+### Database Migrations
+Migrations are applied **automatically** on application startup. You don't need to run them manually.
 
 ## Local Development
 

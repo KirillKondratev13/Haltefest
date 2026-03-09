@@ -145,8 +145,35 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
         return fmt.Errorf("filer upload error: %s", string(bodyBytes))
     }
 
-    // Попробуем взять размер из header, если не получилось — ставим 0 (или реализуй подсчет через TeeReader)
+    // Maximum file size for processing (25MB)
+    const maxFileSize = 25 * 1024 * 1024
     fileSize := header.Size
+
+    // Emit Kafka event only for supported document types (PDF, DOCX, TXT)
+    isSupported := false
+    var status *string
+    var failureCause *string
+    processingStatus := "PROCESSING"
+    errorStatus := "ERROR"
+    
+    switch fileType {
+    case "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+        "text/plain; charset=utf-8":
+        isSupported = true
+        status = &processingStatus
+    }
+
+    // Check file size for supported types
+    if isSupported && header.Size > maxFileSize {
+        isSupported = false // Don't send to Kafka
+        status = &errorStatus
+        cause := "File too large (max 25MB)"
+        failureCause = &cause
+        slog.Info("file too large for processing", "file_name", finalName, "size", header.Size)
+    }
+
     now := time.Now()
     
     fileID, err := fh.FileService.SaveFile(r.Context(), service.UserFile{
@@ -155,21 +182,27 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
         FilePath:  filerPath,
         FileSize:  fileSize,
         FileType:  fileType,
+        Status:    status,
+        FailureCause: failureCause,
         CreatedAt: now,
     })
     if err != nil {
         return err
     }
 
-    // Emit Kafka event for parsing pipeline
-    payload := map[string]interface{}{
-        "file_id":   fileID,
-        "s3_path":   filerPath,
-        "mime_type": fileType,
-    }
-    if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
-        slog.Error("failed to emit kafka event", "error", err, "file_id", fileID)
-        // We don't fail the upload if Kafka is down, but we log it.
+    if isSupported {
+        payload := map[string]interface{}{
+            "file_id":   fileID,
+            "s3_path":   filerPath,
+            "mime_type": fileType,
+        }
+        if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
+            slog.Error("failed to emit kafka event", "error", err, "file_id", fileID)
+        } else {
+            slog.Info("successfully emitted kafka event", "file_id", fileID, "mime_type", fileType)
+        }
+    } else {
+        slog.Info("skipping kafka event for unsupported file type", "file_id", fileID, "mime_type", fileType)
     }
 
     // Для XHR — просто 200 OK (без редиректа)

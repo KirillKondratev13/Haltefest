@@ -1,4 +1,4 @@
-﻿package handler
+package handler
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 )
 
 type Dependencies struct {
-    AssetsFS    http.FileSystem
-    UserService *service.UserService
+	AssetsFS    http.FileSystem
+	UserService *service.UserService
 	FileService *service.FileService // Добавили FileService
 	Config      config.Config
 	KafkaWriter KafkaWriter // New interface for Kafka
@@ -25,52 +25,53 @@ type KafkaWriter interface {
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func RegisterRoutes(r *chi.Mux, deps Dependencies) {
-    home := homeHandler{}
+	home := homeHandler{}
 
-    auth := AuthHandler{
-        UserService: deps.UserService,
-        FileService: deps.FileService, // Передаем FileService в AuthHandler
-    }
+	auth := AuthHandler{
+		UserService: deps.UserService,
+		FileService: deps.FileService, // Передаем FileService в AuthHandler
+	}
 
-    fileHandler := FileHandler{
-        UserService: deps.UserService,
-        FileService: deps.FileService, // Передаем FileService
-        FilerURL:    deps.Config.FilerURL,
-        KafkaWriter: deps.KafkaWriter,
-    }
+	fileHandler := FileHandler{
+		UserService: deps.UserService,
+		FileService: deps.FileService, // Передаем FileService
+		FilerURL:    deps.Config.FilerURL,
+		KafkaWriter: deps.KafkaWriter,
+	}
 
-    r.Use(auth.sessionMiddleware)
+	r.Use(auth.sessionMiddleware)
 
-    r.Get("/", handler(home.handlerIndex))
-    r.Get("/about", handler(home.handleAbout))
-    r.Get("/register", handler(auth.handleRegisterPage))
-    r.Post("/register", handler(auth.handleRegister))
-    r.Get("/login", handler(auth.handleLoginPage))
-    r.Post("/login", handler(auth.handleLogin))
+	r.Get("/", handler(home.handlerIndex))
+	r.Get("/about", handler(home.handleAbout))
+	r.Get("/register", handler(auth.handleRegisterPage))
+	r.Post("/register", handler(auth.handleRegister))
+	r.Get("/login", handler(auth.handleLoginPage))
+	r.Post("/login", handler(auth.handleLogin))
 
-    r.Group(func(r chi.Router) {
-        r.Use(auth.authMiddleware)
-        r.Get("/profile", handler(auth.handleProfile))
-        r.Post("/logout", handler(auth.handleLogout))
+	r.Group(func(r chi.Router) {
+		r.Use(auth.authMiddleware)
+		r.Get("/profile", handler(auth.handleProfile))
+		r.Post("/logout", handler(auth.handleLogout))
 
-        r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
-        r.Get("/profile/files/download", handler(fileHandler.handleDownloadFile))
-        r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
-    })
+		r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
+		r.Get("/profile/files/download", handler(fileHandler.handleDownloadFile))
+		r.Get("/profile/files/data", handler(auth.handleProfileFilesData))
+		r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
+	})
 
-    r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
+	r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
 }
 
 func handler(h handlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        if err := h(w, r); err != nil {
-            handleError(w, r, err)
-        }
-    }
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := h(w, r); err != nil {
+			handleError(w, r, err)
+		}
+	}
 }
 
 func handleError(w http.ResponseWriter, r *http.Request, err error) {
-    slog.Error("error during request", slog.String("err", err.Error()), slog.String("path", r.URL.Path))
-    // Отправляем 500 ошибку клиенту, чтобы он не видел пустой экран
-    http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+	slog.Error("error during request", slog.String("err", err.Error()), slog.String("path", r.URL.Path))
+	// Отправляем 500 ошибку клиенту, чтобы он не видел пустой экран
+	http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 }

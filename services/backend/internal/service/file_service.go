@@ -17,6 +17,7 @@ type UserFile struct {
     Status    *string // PENDING, PROCESSING, READY, ERROR
     Tag       *string
     ErrorMsg  *string
+    FailureCause *string
     CreatedAt time.Time
     DownloadURL string
     DeleteURL  string
@@ -29,16 +30,16 @@ type FileService struct {
 func (s *FileService) SaveFile(ctx context.Context, f UserFile) (int, error) {
     var id int
     err := s.DB.QueryRow(ctx, `
-        INSERT INTO files (user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO files (user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, failure_cause, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id
-    `, f.UserID, f.FileName, f.FilePath, f.FileSize, f.FileType, f.Status, f.Tag, f.ErrorMsg, f.CreatedAt).Scan(&id)
+    `, f.UserID, f.FileName, f.FilePath, f.FileSize, f.FileType, f.Status, f.Tag, f.ErrorMsg, f.FailureCause, f.CreatedAt).Scan(&id)
     return id, err
 }
 
 func (s *FileService) GetUserFiles(ctx context.Context, userID int) ([]UserFile, error) {
     rows, err := s.DB.Query(ctx, `
-        SELECT id, user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, created_at
+        SELECT id, user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, failure_cause, created_at
         FROM files
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -51,7 +52,7 @@ func (s *FileService) GetUserFiles(ctx context.Context, userID int) ([]UserFile,
     var result []UserFile
     for rows.Next() {
         var f UserFile
-        err := rows.Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.Status, &f.Tag, &f.ErrorMsg, &f.CreatedAt)
+        err := rows.Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.Status, &f.Tag, &f.ErrorMsg, &f.FailureCause, &f.CreatedAt)
         if err != nil {
             return nil, err
         }
@@ -68,10 +69,10 @@ func (s *FileService) DeleteFile(ctx context.Context, fileID, userID int) error 
 func (s *FileService) GetFileByID(ctx context.Context, fileID, userID int) (*UserFile, error) {
     var f UserFile
     err := s.DB.QueryRow(ctx, `
-        SELECT id, user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, created_at
+        SELECT id, user_id, file_name, file_path, file_size, file_type, status, tag, error_msg, failure_cause, created_at
         FROM files
         WHERE id = $1 AND user_id = $2
-    `, fileID, userID).Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.Status, &f.Tag, &f.ErrorMsg, &f.CreatedAt)
+    `, fileID, userID).Scan(&f.ID, &f.UserID, &f.FileName, &f.FilePath, &f.FileSize, &f.FileType, &f.Status, &f.Tag, &f.ErrorMsg, &f.FailureCause, &f.CreatedAt)
     if err != nil {
         return nil, err
     }

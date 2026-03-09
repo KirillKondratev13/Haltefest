@@ -1,4 +1,4 @@
-version: '3.3'
+# Removed obsolete version attribute
 
 services:
   backend:
@@ -13,9 +13,16 @@ services:
       - ASSETS_DIR=./web/public/assets
       - KAFKA_BROKERS=kafka:9092
     depends_on:
-      - postgres
-      - seaweedfs-filer
-      - kafka
+      postgres:
+        condition: service_started
+      seaweedfs-filer:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+      dragonfly:
+        condition: service_started
+      seaweedfs-volume:
+        condition: service_started
     restart: always
 
   parser:
@@ -27,22 +34,39 @@ services:
       - REDIS_URL=redis://dragonfly:6379
       - DB_CONN_STR=postgres://myappuser:mypassword@postgres:5432/myapp
     depends_on:
-      - kafka
-      - seaweedfs-filer
-      - dragonfly
+      kafka-init:
+        condition: service_completed_successfully
+      seaweedfs-filer:
+        condition: service_started
+      seaweedfs-volume:
+        condition: service_started
+      dragonfly:
+        condition: service_started
+      postgres:
+        condition: service_started
     restart: always
 
   ml:
-    build: services/ml
+    build:
+      context: services/ml
+      args:
+        MODEL_NAME: chandar-lab/NeoBERT
     container_name: haltefest-ml
     environment:
       - KAFKA_BROKERS=kafka:9092
       - REDIS_URL=redis://dragonfly:6379
       - DB_CONN_STR=postgres://myappuser:mypassword@postgres:5432/myapp
+      - TAGS_FILE=/app/tags.txt
+      - MODEL_NAME=chandar-lab/NeoBERT
     depends_on:
-      - kafka
-      - dragonfly
-      - postgres
+      kafka-init:
+        condition: service_completed_successfully
+      dragonfly:
+        condition: service_started
+      postgres:
+        condition: service_started
+    volumes:
+      - ml_model_cache:/app/model_cache
     restart: always
 
   postgres:
@@ -59,7 +83,7 @@ services:
     restart: always
 
   dragonfly:
-    image: 'docker.dragonflydb.io/dragonflydb/dragonfly'
+    image: 'dragonflydb/dragonfly:v1.27.1'
     container_name: haltefest-dragonfly
     ports:
       - "6379:6379"
@@ -68,19 +92,44 @@ services:
     restart: always
 
   kafka:
-    image: bitnami/kafka:latest
+    image: apache/kafka:latest
     container_name: haltefest-kafka
     ports:
       - "9092:9092"
     environment:
-      - KAFKA_CFG_NODE_ID=0
-      - KAFKA_CFG_PROCESS_ROLES=controller,broker
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+      - KAFKA_METADATA_MAX_AGE_MS=5000
+    healthcheck:
+      test: /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
     restart: always
+
+  kafka-init:
+    image: apache/kafka:latest
+    container_name: haltefest-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo 'Creating Kafka topics...'
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic files-to-parse --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic text-to-classify --partitions 1 --replication-factor 1
+        echo 'Topics created:'
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+    restart: "no"
 
   seaweedfs-master:
     image: chrislusf/seaweedfs
@@ -115,6 +164,6 @@ services:
     volumes:
       - ./seaweedfs_data/filer:/data
     restart: always
-
 volumes:
   postgres_data:
+  ml_model_cache:

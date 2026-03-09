@@ -22,14 +22,13 @@ func (e *Extractor) Extract(data []byte, mimeType string) (string, error) {
 	var text string
 	var err error
 
-	switch mimeType {
-	case "application/pdf":
+	if mimeType == "application/pdf" {
 		text, err = e.extractPDF(data)
-	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+	} else if mimeType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
 		text, err = e.extractDOCX(data)
-	case "text/plain":
+	} else if strings.HasPrefix(mimeType, "text/plain") {
 		text = string(data)
-	default:
+	} else {
 		return "", fmt.Errorf("unsupported mime type: %s", mimeType)
 	}
 
@@ -41,9 +40,13 @@ func (e *Extractor) Extract(data []byte, mimeType string) (string, error) {
 	return strings.TrimSpace(text), nil
 }
 
-func (e *Extractor) IsEnglish(text string) bool {
+func (e *Extractor) IsEnglish(text string) (bool, string) {
 	info := whatlanggo.Detect(text)
-	return info.Lang == whatlanggo.Eng
+	fmt.Printf("DEBUG [Language Detection]: Lang=%s, Confidence=%f, Script=%s, TextLen=%d\n", 
+		info.Lang.String(), info.Confidence, whatlanggo.Scripts[info.Script], len(text))
+	
+	// Disabling strict check as requested. Always returning true for now.
+	return true, info.Lang.String()
 }
 
 func (e *Extractor) extractPDF(data []byte) (string, error) {

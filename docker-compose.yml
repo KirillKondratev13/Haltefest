@@ -164,6 +164,37 @@ services:
     volumes:
       - ./seaweedfs_data/filer:/data
     restart: always
+
+  log-collector:
+    image: docker:cli
+    container_name: haltefest-log-collector
+    depends_on:
+      backend:
+        condition: service_started
+      parser:
+        condition: service_started
+      ml:
+        condition: service_started
+      postgres:
+        condition: service_started
+      dragonfly:
+        condition: service_started
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+      seaweedfs-master:
+        condition: service_started
+      seaweedfs-volume:
+        condition: service_started
+      seaweedfs-filer:
+        condition: service_started
+    entrypoint: ["/bin/sh", "/scripts/collect-container-logs.sh"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    restart: always
 volumes:
   postgres_data:
   ml_model_cache:

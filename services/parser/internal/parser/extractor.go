@@ -1,56 +1,80 @@
 package parser
 
 import (
-	"archive/zip"
 	"bytes"
-	"encoding/xml"
 	"fmt"
-	"io"
+	"regexp"
 	"strings"
+	"unicode"
 
-	"github.com/abadojack/whatlanggo"
 	pdf "github.com/ledongthuc/pdf"
+	"github.com/lu4p/cat"
+	"github.com/pemistahl/lingua-go"
 )
 
-type Extractor struct{}
+type Extractor struct {
+	langDetector lingua.LanguageDetector
+}
 
 func NewExtractor() *Extractor {
-	return &Extractor{}
+	detector := lingua.NewLanguageDetectorBuilder().
+		FromAllLanguages().
+		WithLowAccuracyMode().
+		Build()
+	
+	return &Extractor{
+		langDetector: detector,
+	}
 }
 
 func (e *Extractor) Extract(data []byte, mimeType string) (string, error) {
 	var text string
 	var err error
 
-	if mimeType == "application/pdf" {
+	switch mimeType {
+	case "application/pdf":
 		text, err = e.extractPDF(data)
-	} else if mimeType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
 		text, err = e.extractDOCX(data)
-	} else if strings.HasPrefix(mimeType, "text/plain") {
-		text = string(data)
-	} else {
-		return "", fmt.Errorf("unsupported mime type: %s", mimeType)
+	default:
+		if strings.HasPrefix(mimeType, "text/plain") {
+			text = string(data)
+		} else {
+			return "", fmt.Errorf("unsupported mime type: %s", mimeType)
+		}
 	}
 
 	if err != nil {
 		return "", err
 	}
 
-	text = normalizeWhitespace(text)
+	text = cleanText(text)
 	return strings.TrimSpace(text), nil
 }
 
 func (e *Extractor) IsEnglish(text string) (bool, string) {
-	info := whatlanggo.Detect(text)
-	fmt.Printf("DEBUG [Language Detection]: Lang=%s, Confidence=%f, Script=%s, TextLen=%d\n", 
-		info.Lang.String(), info.Confidence, whatlanggo.Scripts[info.Script], len(text))
+	sample := text
+	if len(sample) > 10000 {
+		sample = sample[:10000]
+	}
 	
-	// Disabling strict check as requested. Always returning true for now.
-	return true, info.Lang.String()
+	// Детектируем язык (логика сохранена для логирования/статистики)
+	detectedLang, ok := e.langDetector.DetectLanguageOf(sample)
+	if !ok {
+		// ЗАГЛУШКА: пропускаем даже если язык не определён
+		return true, "unknown"
+	}
+	
+	// ЗАГЛУШКА: всегда возвращаем true, любой язык проходит
+	_ = detectedLang.IsoCode639_1() // явно используем, чтобы не было warning
+	
+	return true, detectedLang.String()
 }
 
 func (e *Extractor) extractPDF(data []byte) (string, error) {
-	r, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
+	reader := bytes.NewReader(data)
+	
+	r, err := pdf.NewReader(reader, int64(len(data)))
 	if err != nil {
 		return "", fmt.Errorf("failed to create pdf reader: %w", err)
 	}
@@ -68,10 +92,9 @@ func (e *Extractor) extractPDF(data []byte) (string, error) {
 			continue
 		}
 
-		// Извлекаем текст со страницы
 		text, err := page.GetPlainText(nil)
 		if err != nil {
-			continue // Пропускаем проблемные страницы
+			continue
 		}
 
 		sb.WriteString(text)
@@ -86,103 +109,43 @@ func (e *Extractor) extractPDF(data []byte) (string, error) {
 }
 
 func (e *Extractor) extractDOCX(data []byte) (string, error) {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	text, err := cat.FromBytes(data)
 	if err != nil {
-		return "", fmt.Errorf("failed to open docx zip: %w", err)
+		return "", fmt.Errorf("failed to extract text from docx: %w", err)
 	}
 
-	var sb strings.Builder
-
-	for _, f := range r.File {
-		if f.Name == "word/document.xml" {
-			rc, err := f.Open()
-			if err != nil {
-				return "", fmt.Errorf("failed to open document.xml: %w", err)
-			}
-
-			content, err := io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				return "", fmt.Errorf("failed to read document.xml: %w", err)
-			}
-
-			text, err := extractTextFromOOXML(string(content))
-			if err != nil {
-				return "", fmt.Errorf("failed to parse OOXML: %w", err)
-			}
-
-			sb.WriteString(text)
-		}
-
-		// Извлекаем текст из header/footer
-		if strings.HasPrefix(f.Name, "word/header") || strings.HasPrefix(f.Name, "word/footer") {
-			rc, err := f.Open()
-			if err != nil {
-				continue
-			}
-
-			content, err := io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				continue
-			}
-
-			text, err := extractTextFromOOXML(string(content))
-			if err == nil {
-				sb.WriteString("\n")
-				sb.WriteString(text)
-			}
-		}
-	}
-
-	if sb.Len() == 0 {
+	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("no text content found in docx")
 	}
 
-	return sb.String(), nil
+	return text, nil
 }
 
-func extractTextFromOOXML(xmlContent string) (string, error) {
-	decoder := xml.NewDecoder(strings.NewReader(xmlContent))
-	var sb strings.Builder
-	var currentText strings.Builder
+func cleanText(text string) string {
+	// Удаляем Unicode control characters (категория C)
+	controlCharsRegex := regexp.MustCompile(`[\p{C}]`)
+	text = controlCharsRegex.ReplaceAllString(text, "")
 
-	for {
-		token, err := decoder.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-
-		switch t := token.(type) {
-		case xml.CharData:
-			text := strings.TrimSpace(string(t))
-			if text != "" {
-				if currentText.Len() > 0 {
-					currentText.WriteString(" ")
-				}
-				currentText.WriteString(text)
-			}
-		case xml.EndElement:
-			if t.Name.Local == "p" {
-				if currentText.Len() > 0 {
-					sb.WriteString(currentText.String())
-					sb.WriteString("\n")
-					currentText.Reset()
-				}
-			} else if t.Name.Local == "br" {
-				sb.WriteString(currentText.String())
-				sb.WriteString("\n")
-				currentText.Reset()
-			} else if t.Name.Local == "tab" {
-				currentText.WriteString("\t")
-			}
-		}
+	// Удаляем специфические проблемные символы
+	problematicChars := []rune{
+		'\u00A0', // non-breaking space
+		'\u200B', // zero-width space
+		'\u200C', // zero-width non-joiner
+		'\u200D', // zero-width joiner
+		'\uFEFF', // BOM / zero-width no-break space
+		'\u2060', // word joiner
+		'\u180E', // mongolian vowel separator
+	}
+	
+	for _, char := range problematicChars {
+		text = strings.ReplaceAll(text, string(char), " ")
 	}
 
-	return sb.String(), nil
+	text = normalizeWhitespace(text)
+	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
+	text = regexp.MustCompile(`\n\s*\n`).ReplaceAllString(text, "\n\n")
+
+	return text
 }
 
 func normalizeWhitespace(text string) string {
@@ -190,14 +153,17 @@ func normalizeWhitespace(text string) string {
 	lastWasSpace := false
 
 	for _, r := range text {
-		isSpace := r == ' ' || r == '\t' || r == '\n'
+		isSpace := r == ' ' || r == '\t' || r == '\n' || r == '\r'
+		
 		if isSpace {
 			if !lastWasSpace {
 				sb.WriteRune(' ')
 			}
 			lastWasSpace = true
 		} else {
-			sb.WriteRune(r)
+			if unicode.IsPrint(r) {
+				sb.WriteRune(r)
+			}
 			lastWasSpace = false
 		}
 	}

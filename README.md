@@ -1,48 +1,69 @@
-# Golang Templ HTMX App
+# Haltefest
 
-This project is a web application built with **Go**, **Templ**, **HTMX**, and **Tailwind CSS**. It uses **PostgreSQL** for data storage and **SeaweedFS** for file storage.
+Платформа для загрузки файлов и асинхронной обработки текста:
+- backend (Go + Templ + HTMX)
+- parser worker (Go)
+- ML service (Python + NeoBERT)
+- Kafka, DragonflyDB (Redis), PostgreSQL, SeaweedFS
 
-## Prerequisites
+## Быстрый старт
 
-- **Docker** & **Docker Compose**
-- **Go** (for local development)
-- **Node.js** & **npm** (for local development)
+Требования:
+- Docker
+- Docker Compose
 
-## Quick Start (Docker)
-
-To run the entire application stack (App, Postgres, SeaweedFS):
+Запуск всего стека:
 
 ```bash
-docker-compose up --build
+docker compose up -d --build
 ```
 
-The application will be available at: `http://localhost:8081`
+Приложение: `http://localhost:8081`
 
-### Database Migrations
-Migrations are applied **automatically** on application startup. You don't need to run them manually.
+Миграции БД применяются автоматически на старте backend.
 
-## Local Development
+## Логи
 
-If you want to run the application locally (outside Docker) but keep dependencies in Docker:
+После старта `docker compose up -d` runtime-логи контейнеров пишутся в:
+- `logs/<container>/current.log`
+- `logs/<container>/<timestamp>.log`
 
-1.  Start only infrastructure services:
-    ```bash
-    docker-compose up -d postgres seaweedfs-master seaweedfs-volume seaweedfs-filer
-    ```
-2.  Install dependencies:
-    ```bash
-    go mod download
-    cd web && npm install && cd ..
-    ```
-3.  Run the application with hot reload:
-    ```bash
-    make watch
-    ```
+Примеры:
 
-## Project Structure
+```bash
+tail -f logs/haltefest-backend/current.log
+tail -f logs/haltefest-parser/current.log
+tail -f logs/haltefest-ml/current.log
+```
 
-- **cmd/myapp**: Entry point.
-- **internal**: Application logic.
-- **web**: Frontend assets and build config.
-- **docker-compose.yml**: Full stack definition.
-- **Dockerfile**: Application container definition.
+## Локальная разработка
+
+Основной код backend находится в `services/backend`.
+
+Полезные команды:
+
+```bash
+cd services/backend
+make build
+make watch
+```
+
+Если менялся Go/JS/CSS backend и ты запускаешь через Docker, пересобери backend-образ:
+
+```bash
+docker compose up -d --build backend
+```
+
+## Документация
+
+Рабочая документация проекта ведется локально в `docs/`.
+`docs/` не публикуется в GitHub и исключена через `.gitignore`.
+
+## Структура репозитория
+
+- `services/backend` - web backend и frontend-ассеты
+- `services/parser` - parser worker
+- `services/ml` - ML классификатор
+- `docker-compose.yml` - оркестрация окружения
+- `scripts/collect-container-logs.sh` - сбор runtime-логов контейнеров в файлы
+- `docs/` - локальная проектная документация (игнорируется git)

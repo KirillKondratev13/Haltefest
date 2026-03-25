@@ -1,11 +1,13 @@
 import 'htmx.org'
-import { initUserGraph } from './graph'
+import { updateUserGraph } from './graph'
 
 const FILES_DATA_URL = '/profile/files/data'
 const POLL_INTERVAL_MS = 5000
 
 let refreshInFlight = false
 let pollingId = null
+let lastFilesData = null // Кэшируем последние данные
+let lastUsername = null
 
 function escapeHtml(value) {
 	if (value === null || value === undefined) return ''
@@ -29,6 +31,38 @@ function normalizeFileData(payload) {
 	const files = payload?.files || payload?.Files || []
 	const username = payload?.username || payload?.Username || 'User'
 	return { files, username }
+}
+
+function getFileSignature(file) {
+	// Включаем поля, которые влияют на таблицу/граф,
+	// чтобы polling корректно ловил статусные обновления.
+	return [
+		file.FileName || '',
+		file.CreatedAt || '',
+		file.FileSize || '',
+		file.FileType || '',
+		file.Status || '',
+		file.Tag || '',
+		file.FailureCause || '',
+		file.DownloadURL || '',
+		file.DeleteURL || '',
+	].join('|')
+}
+
+function filesHaveChanged(oldFiles, newFiles) {
+	if (!oldFiles || !newFiles) return true
+	if (oldFiles.length !== newFiles.length) return true
+
+	const oldSignatures = new Set(oldFiles.map(getFileSignature))
+	const newSignatures = new Set(newFiles.map(getFileSignature))
+
+	if (oldSignatures.size !== newSignatures.size) return true
+
+	for (const sig of newSignatures) {
+		if (!oldSignatures.has(sig)) return true
+	}
+
+	return false
 }
 
 function getFilesSection() {
@@ -143,13 +177,30 @@ function readInitialFileData() {
 	}
 }
 
-function renderProfileData(payload) {
+function renderProfileData(payload, forceUpdate = false) {
 	const { files, username } = normalizeFileData(payload)
-	renderFilesTable(files)
-	initUserGraph(username, files)
+
+	// Проверяем, изменились ли данные
+	const hasFilesChanged = filesHaveChanged(lastFilesData, files)
+	const hasUsernameChanged = lastUsername !== username
+
+	// Обновляем таблицу только если изменились файлы
+	if (hasFilesChanged || forceUpdate) {
+		renderFilesTable(files)
+	}
+
+	// Обновляем граф только если есть изменения
+	if (hasFilesChanged || hasUsernameChanged || forceUpdate) {
+		updateUserGraph(username, files)
+	}
+
+	if (hasFilesChanged || hasUsernameChanged || forceUpdate) {
+		lastFilesData = files
+		lastUsername = username
+	}
 }
 
-async function refreshFilesData() {
+async function refreshFilesData(forceUpdate = false) {
 	if (refreshInFlight) return
 	refreshInFlight = true
 
@@ -161,7 +212,7 @@ async function refreshFilesData() {
 			throw new Error(response.statusText)
 		}
 		const payload = await response.json()
-		renderProfileData(payload)
+		renderProfileData(payload, forceUpdate)
 	} catch (err) {
 		console.error('Failed to refresh files data', err)
 	} finally {
@@ -182,7 +233,8 @@ function setupFilesTableActions() {
 		try {
 			const response = await fetch(deleteUrl, { method: 'POST' })
 			if (!response.ok) throw new Error(response.statusText)
-			await refreshFilesData()
+			// Принудительное обновление после удаления
+			await refreshFilesData(true)
 		} catch (err) {
 			alert('Failed to delete file: ' + err.message)
 		}
@@ -221,7 +273,8 @@ function setupUploadForm() {
 				status.textContent = 'Upload complete. File is being processed...'
 				progressBar.style.width = '100%'
 				fileInput.value = ''
-				await refreshFilesData()
+				// Принудительное обновление после загрузки
+				await refreshFilesData(true)
 			} else {
 				status.textContent = 'Error: ' + xhr.responseText
 			}
@@ -240,14 +293,15 @@ function startPolling() {
 		window.clearInterval(pollingId)
 	}
 	pollingId = window.setInterval(() => {
-		void refreshFilesData()
+		void refreshFilesData(false) // Без принудительного обновления
 	}, POLL_INTERVAL_MS)
 }
 
 document.addEventListener('DOMContentLoaded', function () {
 	const initialFileData = readInitialFileData()
 	if (initialFileData) {
-		renderProfileData(initialFileData)
+		// Первое рендерирование всегда принудительное
+		renderProfileData(initialFileData, true)
 		startPolling()
 	}
 
@@ -256,5 +310,5 @@ document.addEventListener('DOMContentLoaded', function () {
 })
 
 window.addEventListener('graph:file-deleted', () => {
-	void refreshFilesData()
+	void refreshFilesData(true)
 })

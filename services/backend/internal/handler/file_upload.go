@@ -1,13 +1,15 @@
-﻿package handler
+package handler
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
@@ -15,199 +17,261 @@ import (
 
 // FileHandler будет хранить зависимости: UserService, FileService (если нужно), и URL Filer'а.
 type FileHandler struct {
-    UserService *service.UserService
-    FileService *service.FileService
-    FilerURL    string
-    KafkaWriter KafkaWriter
+	UserService *service.UserService
+	FileService *service.FileService
+	FilerURL    string
+	KafkaWriter KafkaWriter
 }
 
+const (
+	mimeTypePDF  = "application/pdf"
+	mimeTypeDOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+func normalizeDetectedMime(fileName, detectedMime string) (string, string) {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	switch ext {
+	case ".docx":
+		if detectedMime == "application/zip" || detectedMime == "application/octet-stream" {
+			return mimeTypeDOCX, "extension_override_docx_from_zip_or_octet_stream"
+		}
+		if strings.Contains(detectedMime, "zip") {
+			return mimeTypeDOCX, "extension_override_docx_from_zip_like_mime"
+		}
+		return mimeTypeDOCX, "extension_priority_docx"
+	default:
+		return detectedMime, "magic_bytes"
+	}
+}
+
+func isSupportedMimeType(mimeType string) bool {
+	return mimeType == mimeTypePDF ||
+		mimeType == mimeTypeDOCX ||
+		strings.HasPrefix(mimeType, "text/plain")
+}
+
+func previewHex(data []byte, n int) string {
+	if n <= 0 || len(data) == 0 {
+		return ""
+	}
+	if n > len(data) {
+		n = len(data)
+	}
+	return hex.EncodeToString(data[:n])
+}
 
 func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, originalName string) (string, error) {
-    // Разделим имя файла на "название + расширение"
-    // например, "photo.png" -> name="photo", ext=".png"
-    ext := filepath.Ext(originalName)            // ".png"
-    baseName := originalName[0 : len(originalName)-len(ext)] // "photo"
+	// Разделим имя файла на "название + расширение"
+	// например, "photo.png" -> name="photo", ext=".png"
+	ext := filepath.Ext(originalName)                        // ".png"
+	baseName := originalName[0 : len(originalName)-len(ext)] // "photo"
 
-    finalName := originalName
-    suffix := 1
+	finalName := originalName
+	suffix := 1
 
-    for {
-        // Проверим в БД, нет ли file_path = "/user_<userID>/finalName"
-        pathToCheck := fmt.Sprintf("/user_%d/%s", userID, finalName)
+	for {
+		// Проверим в БД, нет ли file_path = "/user_<userID>/finalName"
+		pathToCheck := fmt.Sprintf("/user_%d/%s", userID, finalName)
 
-        var exists bool
-        err := fh.FileService.DB.QueryRow(ctx,
-            `SELECT EXISTS(
+		var exists bool
+		err := fh.FileService.DB.QueryRow(ctx,
+			`SELECT EXISTS(
                 SELECT 1 FROM files
                 WHERE user_id = $1
                   AND file_path = $2
             )`,
-            userID,
-            pathToCheck,
-        ).Scan(&exists)
-        if err != nil {
-            return "", err
-        }
+			userID,
+			pathToCheck,
+		).Scan(&exists)
+		if err != nil {
+			return "", err
+		}
 
-        if !exists {
-            // значит свободно, используем finalName
-            return finalName, nil
-        }
+		if !exists {
+			// значит свободно, используем finalName
+			return finalName, nil
+		}
 
-        // иначе добавляем (1), (2) и т. д.
-        finalName = fmt.Sprintf("%s(%d)%s", baseName, suffix, ext)
-        suffix++
-    }
+		// иначе добавляем (1), (2) и т. д.
+		finalName = fmt.Sprintf("%s(%d)%s", baseName, suffix, ext)
+		suffix++
+	}
 }
 
 func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) error {
-    user := getUserFromContext(r)
-    if user == nil {
-        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-        return nil
-    }
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return nil
+	}
 
-    // ParseMultipartForm не нужен для стриминга, но нужен для FormFile
-    err := r.ParseMultipartForm(32 << 20)
-    if err != nil {
-        http.Error(w, "Error parsing form data", http.StatusBadRequest)
-        return nil
-    }
+	// ParseMultipartForm не нужен для стриминга, но нужен для FormFile
+	err := r.ParseMultipartForm(32 << 20)
+	if err != nil {
+		http.Error(w, "Error parsing form data", http.StatusBadRequest)
+		return nil
+	}
 
-    file, header, err := r.FormFile("file")
-    if err != nil {
-        http.Error(w, "File not found in form", http.StatusBadRequest)
-        return nil
-    }
-    defer file.Close()
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "File not found in form", http.StatusBadRequest)
+		return nil
+	}
+	defer file.Close()
 
-    originalFileName := header.Filename
+	originalFileName := header.Filename
+	headerMimeType := header.Header.Get("Content-Type")
+	fileExt := strings.ToLower(filepath.Ext(originalFileName))
 
-    // Определяем тип файла по magic bytes (первые 512 байт)
-    buffer := make([]byte, 512)
-    n, err := file.Read(buffer)
-    if err != nil && err != io.EOF {
-        http.Error(w, "Error reading file header", http.StatusInternalServerError)
-        return nil
-    }
-    fileType := http.DetectContentType(buffer[:n])
+	// Определяем тип файла по magic bytes (первые 512 байт)
+	buffer := make([]byte, 512)
+	n, err := file.Read(buffer)
+	if err != nil && err != io.EOF {
+		http.Error(w, "Error reading file header", http.StatusInternalServerError)
+		return nil
+	}
+	detectedMimeType := http.DetectContentType(buffer[:n])
+	fileType, mimeDecision := normalizeDetectedMime(originalFileName, detectedMimeType)
 
-    // Сбрасываем указатель в начало файла
-    _, err = file.Seek(0, io.SeekStart)
-    if err != nil {
-        http.Error(w, "Error resetting file pointer", http.StatusInternalServerError)
-        return nil
-    }
+	slog.Info("file MIME detection",
+		"original_file_name", originalFileName,
+		"file_extension", fileExt,
+		"multipart_header_mime", headerMimeType,
+		"detected_mime_magic", detectedMimeType,
+		"normalized_mime", fileType,
+		"normalization_reason", mimeDecision,
+		"header_bytes_read", n,
+		"header_hex_preview", previewHex(buffer[:n], 16),
+		"size_bytes", header.Size,
+	)
 
-    // Получаем уникальное имя
-    finalName, err := fh.getUniqueFileName(r.Context(), user.ID, originalFileName)
-    if err != nil {
-        http.Error(w, "Error checking unique filename", http.StatusInternalServerError)
-        return nil
-    }
+	// Сбрасываем указатель в начало файла
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		http.Error(w, "Error resetting file pointer", http.StatusInternalServerError)
+		return nil
+	}
 
-    filerPath := fmt.Sprintf("/user_%d/%s", user.ID, finalName)
-    uploadURL := fmt.Sprintf("%s%s", fh.FilerURL, filerPath)
+	// Получаем уникальное имя
+	finalName, err := fh.getUniqueFileName(r.Context(), user.ID, originalFileName)
+	if err != nil {
+		http.Error(w, "Error checking unique filename", http.StatusInternalServerError)
+		return nil
+	}
 
-    // Стримим файл напрямую в SeaweedFS
-    pr, pw := io.Pipe()
-    mw := multipart.NewWriter(pw)
+	filerPath := fmt.Sprintf("/user_%d/%s", user.ID, finalName)
+	uploadURL := fmt.Sprintf("%s%s", fh.FilerURL, filerPath)
 
-    go func() {
-        defer pw.Close()
-        fw, err := mw.CreateFormFile("file", finalName)
-        if err != nil {
-            pw.CloseWithError(err)
-            return
-        }
-        _, err = io.Copy(fw, file)
-        if err != nil {
-            pw.CloseWithError(err)
-            return
-        }
-        mw.Close()
-    }()
+	// Стримим файл напрямую в SeaweedFS
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
 
-    req, err := http.NewRequest("POST", uploadURL, pr)
-    if err != nil {
-        return err
-    }
-    req.Header.Set("Content-Type", mw.FormDataContentType())
+	go func() {
+		defer pw.Close()
+		fw, err := mw.CreateFormFile("file", finalName)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		_, err = io.Copy(fw, file)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		mw.Close()
+	}()
 
-    resp, err := http.DefaultClient.Do(req)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
+	req, err := http.NewRequest("POST", uploadURL, pr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 
-    if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-        bodyBytes, _ := io.ReadAll(resp.Body)
-        return fmt.Errorf("filer upload error: %s", string(bodyBytes))
-    }
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-    // Maximum file size for processing (25MB)
-    const maxFileSize = 25 * 1024 * 1024
-    fileSize := header.Size
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("filer upload error: %s", string(bodyBytes))
+	}
 
-    // Emit Kafka event only for supported document types (PDF, DOCX, TXT)
-    isSupported := false
-    var status *string
-    var failureCause *string
-    processingStatus := "PROCESSING"
-    errorStatus := "ERROR"
-    
-    switch fileType {
-    case "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "text/plain",
-        "text/plain; charset=utf-8":
-        isSupported = true
-        status = &processingStatus
-    }
+	// Maximum file size for processing (25MB)
+	const maxFileSize = 25 * 1024 * 1024
+	fileSize := header.Size
 
-    // Check file size for supported types
-    if isSupported && header.Size > maxFileSize {
-        isSupported = false // Don't send to Kafka
-        status = &errorStatus
-        cause := "File too large (max 25MB)"
-        failureCause = &cause
-        slog.Info("file too large for processing", "file_name", finalName, "size", header.Size)
-    }
+	// Emit Kafka event only for supported document types (PDF, DOCX, TXT)
+	isSupported := isSupportedMimeType(fileType)
+	var status *string
+	var failureCause *string
+	processingStatus := "PROCESSING"
+	errorStatus := "ERROR"
 
-    now := time.Now()
-    
-    fileID, err := fh.FileService.SaveFile(r.Context(), service.UserFile{
-        UserID:    user.ID,
-        FileName:  finalName,
-        FilePath:  filerPath,
-        FileSize:  fileSize,
-        FileType:  fileType,
-        Status:    status,
-        FailureCause: failureCause,
-        CreatedAt: now,
-    })
-    if err != nil {
-        return err
-    }
+	if isSupported {
+		status = &processingStatus
+	}
 
-    if isSupported {
-        payload := map[string]interface{}{
-            "file_id":   fileID,
-            "s3_path":   filerPath,
-            "mime_type": fileType,
-        }
-        if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
-            slog.Error("failed to emit kafka event", "error", err, "file_id", fileID)
-        } else {
-            slog.Info("successfully emitted kafka event", "file_id", fileID, "mime_type", fileType)
-        }
-    } else {
-        slog.Info("skipping kafka event for unsupported file type", "file_id", fileID, "mime_type", fileType)
-    }
+	// Check file size for supported types
+	decisionReason := "unsupported_mime"
+	if isSupported {
+		decisionReason = "supported_mime"
+	}
 
-    // Для XHR — просто 200 OK (без редиректа)
-    w.WriteHeader(http.StatusOK)
-    return nil
+	if isSupported && header.Size > maxFileSize {
+		isSupported = false // Don't send to Kafka
+		status = &errorStatus
+		cause := "File too large (max 25MB)"
+		failureCause = &cause
+		decisionReason = "supported_mime_but_file_too_large"
+		slog.Info("file too large for processing", "file_name", finalName, "size", header.Size)
+	}
+
+	slog.Info("file processing eligibility",
+		"file_name", finalName,
+		"file_extension", strings.ToLower(filepath.Ext(finalName)),
+		"mime_type", fileType,
+		"is_supported", isSupported,
+		"decision_reason", decisionReason,
+		"size_bytes", header.Size,
+		"max_processing_size_bytes", maxFileSize,
+	)
+
+	now := time.Now()
+
+	fileID, err := fh.FileService.SaveFile(r.Context(), service.UserFile{
+		UserID:       user.ID,
+		FileName:     finalName,
+		FilePath:     filerPath,
+		FileSize:     fileSize,
+		FileType:     fileType,
+		Status:       status,
+		FailureCause: failureCause,
+		CreatedAt:    now,
+	})
+	if err != nil {
+		return err
+	}
+
+	if isSupported {
+		payload := map[string]interface{}{
+			"file_id":   fileID,
+			"s3_path":   filerPath,
+			"mime_type": fileType,
+		}
+		if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
+			slog.Error("failed to emit kafka event", "error", err, "file_id", fileID, "mime_type", fileType, "decision_reason", decisionReason)
+		} else {
+			slog.Info("successfully emitted kafka event", "file_id", fileID, "mime_type", fileType, "decision_reason", decisionReason)
+		}
+	} else {
+		slog.Info("skipping kafka event for unsupported file type", "file_id", fileID, "mime_type", fileType, "decision_reason", decisionReason)
+	}
+
+	// Для XHR — просто 200 OK (без редиректа)
+	w.WriteHeader(http.StatusOK)
+	return nil
 }
 
 // func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) error {
@@ -297,4 +361,3 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 //     http.Redirect(w, r, "/profile", http.StatusSeeOther)
 //     return nil
 // }
-

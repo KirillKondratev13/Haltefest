@@ -49,11 +49,10 @@ Thumbs.db
 
 # Data
 seaweedfs_data/
+logs/
+docs/
 
 # Environment files
 **/.env
 **/.env.*
 !**/.env.example
-
-# Files to keep
-docs/

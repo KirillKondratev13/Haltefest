@@ -2,9 +2,26 @@ import { DataSet } from 'vis-data'
 import { Network } from 'vis-network'
 import { getCategoryByFileType } from './fileCategories'
 
+const USER_NODE_ID = 'user'
+const EDGE_STYLE = { color: '#9ca3af', arrows: 'to' }
+const LABEL_LEVELS = [
+	{ scale: 0, mode: 'short' },
+	{ scale: 1.7, mode: 'medium' },
+	{ scale: 2.6, mode: 'full' },
+]
+
 let networkInstance = null
 let contextMenu = null
 let activeNodes = null
+let activeEdges = null
+let savedNodePositions = new Map()
+let currentLabelMode = 'short'
+let lastGraphFingerprint = ''
+
+function ensureDataSets() {
+	if (!activeNodes) activeNodes = new DataSet()
+	if (!activeEdges) activeEdges = new DataSet()
+}
 
 function ensureContextMenu() {
 	if (contextMenu) return contextMenu
@@ -45,9 +62,9 @@ function ensureContextMenu() {
 			const response = await fetch(deleteButton.dataset.url, { method: 'POST' })
 			if (!response.ok) throw new Error(response.statusText)
 
-			const nodeId = Number.parseInt(deleteButton.dataset.node, 10)
-			if (activeNodes && Number.isInteger(nodeId)) {
-				activeNodes.remove(nodeId)
+			const nodeId = deleteButton.dataset.node
+			if (activeNodes && nodeId) {
+				removeNodeWithEdges(nodeId)
 			}
 
 			contextMenu.style.display = 'none'
@@ -58,6 +75,67 @@ function ensureContextMenu() {
 	})
 
 	return contextMenu
+}
+
+function removeNodeWithEdges(nodeId) {
+	if (!activeNodes || !activeEdges) return
+
+	const edgesToRemove = activeEdges
+		.get({ filter: edge => edge.from === nodeId || edge.to === nodeId })
+		.map(edge => edge.id)
+
+	if (edgesToRemove.length > 0) {
+		activeEdges.remove(edgesToRemove)
+	}
+
+	activeNodes.remove(nodeId)
+	savedNodePositions.delete(nodeId)
+}
+
+function getGraphFingerprint(username, files) {
+	const fileSignatures = files
+		.map(file =>
+			[
+				file.FileName || '',
+				file.CreatedAt || '',
+				file.FileSize || '',
+				file.FileType || '',
+				file.Status || '',
+				file.Tag || '',
+				file.FailureCause || '',
+			].join('|')
+		)
+		.sort()
+		.join('||')
+
+	return `${username || 'User'}::${fileSignatures}`
+}
+
+function getLabelModeByScale(scale) {
+	const level =
+		LABEL_LEVELS.slice().reverse().find(item => scale >= item.scale) ||
+		LABEL_LEVELS[0]
+	return level.mode
+}
+
+function getFileIdentity(file) {
+	return [file.FileName || '', file.CreatedAt || '', file.FileSize || ''].join('|')
+}
+
+function getFileNodeId(file) {
+	return `file:${encodeURIComponent(getFileIdentity(file))}`
+}
+
+function getCategoryNodeId(category) {
+	return `category:${encodeURIComponent(category)}`
+}
+
+function getTagNodeId(category, tagLabel) {
+	return `tag:${encodeURIComponent(category)}:${encodeURIComponent(tagLabel)}`
+}
+
+function getEdgeId(from, to) {
+	return `edge:${from}->${to}`
 }
 
 function isTextualFile(fileType) {
@@ -94,22 +172,64 @@ function statusColor(status) {
 	}
 }
 
-export function initUserGraph(username, files) {
-	const container = document.getElementById('graph-container')
-	if (!container) return
+function saveNodePositions(nodeIds = null) {
+	if (!networkInstance || !activeNodes) return
 
-	if (networkInstance) {
-		networkInstance.destroy()
-		networkInstance = null
+	const ids = nodeIds || activeNodes.getIds()
+	if (!ids || ids.length === 0) return
+
+	const positions = networkInstance.getPositions(ids)
+	Object.entries(positions).forEach(([nodeId, pos]) => {
+		savedNodePositions.set(nodeId, pos)
+	})
+}
+
+function applySavedPosition(node) {
+	const savedPos = savedNodePositions.get(node.id)
+	if (!savedPos) return node
+	return { ...node, x: savedPos.x, y: savedPos.y }
+}
+
+function resolveFileLabel(mode, shortLabel, mediumLabel, fullLabel) {
+	if (mode === 'full') return fullLabel || mediumLabel || shortLabel
+	if (mode === 'medium') return mediumLabel || shortLabel
+	return shortLabel
+}
+
+function buildFileNode(file) {
+	const status = (file.Status || '').toUpperCase()
+	const tag = file.Tag || ''
+	const shortLabel = shortenFileName(file.FileName)
+	const mediumLabel = `${wrapLabel(file.FileName)}\n${formatBytes(file.FileSize)}\n${status || 'N/A'}`
+	const fullLabel = `${wrapLabel(file.FileName)}\n${formatBytes(file.FileSize)}\n${status || 'N/A'}\n${tag || '-'}\n${file.CreatedAt || ''}`
+
+	return {
+		id: getFileNodeId(file),
+		type: 'file',
+		shape: 'ellipse',
+		color: statusColor(status),
+		label: resolveFileLabel(currentLabelMode, shortLabel, mediumLabel, fullLabel),
+		shortLabel,
+		mediumLabel,
+		fullLabel,
+		downloadUrl: file.DownloadURL,
+		deleteUrl: file.DeleteURL,
+		fileName: file.FileName,
+		fileSize: file.FileSize,
+		createdAt: file.CreatedAt,
+		status,
+		tag,
+		failureCause: file.FailureCause || '',
 	}
+}
 
-	const nodes = new DataSet()
-	const edges = new DataSet()
-	activeNodes = nodes
+function buildDesiredGraph(username, files) {
+	const nodes = new Map()
+	const edges = new Map()
 
-	const USER_NODE_ID = 1
-	nodes.add({
+	nodes.set(USER_NODE_ID, {
 		id: USER_NODE_ID,
+		type: 'user',
 		label: username || 'User',
 		shape: 'circle',
 		color: '#2563eb',
@@ -117,96 +237,236 @@ export function initUserGraph(username, files) {
 		size: 40,
 	})
 
-	const categories = new Set()
-	files.forEach(file => categories.add(getCategoryByFileType(file.FileType)))
-
-	const categoryNodeIds = {}
-	let categoryNodeCounter = 100
-	Array.from(categories).forEach(category => {
-		const categoryNodeID = categoryNodeCounter++
-		categoryNodeIds[category] = categoryNodeID
-
-		nodes.add({
-			id: categoryNodeID,
-			label: category,
-			shape: 'box',
-			color: '#7c3aed',
-			size: 28,
-		})
-		edges.add({ from: USER_NODE_ID, to: categoryNodeID, color: '#9ca3af', arrows: 'to' })
+	const categories = new Map()
+	files.forEach(file => {
+		const category = getCategoryByFileType(file.FileType, file.FileName)
+		if (!categories.has(category)) {
+			const categoryNodeId = getCategoryNodeId(category)
+			categories.set(category, categoryNodeId)
+			nodes.set(categoryNodeId, {
+				id: categoryNodeId,
+				type: 'category',
+				label: category,
+				shape: 'box',
+				color: '#7c3aed',
+				size: 28,
+			})
+			edges.set(getEdgeId(USER_NODE_ID, categoryNodeId), {
+				id: getEdgeId(USER_NODE_ID, categoryNodeId),
+				from: USER_NODE_ID,
+				to: categoryNodeId,
+				...EDGE_STYLE,
+			})
+		}
 	})
 
-	const tagNodeIds = {}
-	let tagNodeCounter = 500
-	let fileNodeCounter = 1000
-
 	files.forEach(file => {
-		const category = getCategoryByFileType(file.FileType)
-		const categoryNodeID = categoryNodeIds[category]
-		if (!categoryNodeID) return
+		const category = getCategoryByFileType(file.FileType, file.FileName)
+		const categoryNodeId = categories.get(category)
+		if (!categoryNodeId) return
 
-		const status = (file.Status || '').toUpperCase()
-		const tag = file.Tag || ''
-		const failureCause = file.FailureCause || ''
-		const nodeID = fileNodeCounter++
-
-		nodes.add({
-			id: nodeID,
-			label: shortenFileName(file.FileName),
-			shape: 'ellipse',
-			color: statusColor(status),
-			shortLabel: shortenFileName(file.FileName),
-			mediumLabel: `${wrapLabel(file.FileName)}\n${formatBytes(file.FileSize)}\n${status || 'N/A'}`,
-			fullLabel: `${wrapLabel(file.FileName)}\n${formatBytes(file.FileSize)}\n${status || 'N/A'}\n${
-				tag || '-'
-			}\n${file.CreatedAt}`,
-			downloadUrl: file.DownloadURL,
-			deleteUrl: file.DeleteURL,
-			fileName: file.FileName,
-			fileSize: file.FileSize,
-			createdAt: file.CreatedAt,
-			status,
-			tag,
-			failureCause,
-		})
+		const fileNode = buildFileNode(file)
+		nodes.set(fileNode.id, fileNode)
 
 		if (isTextualFile(file.FileType)) {
 			const tagLabel = normalizeTagLabel(file)
-			const tagKey = `${category}:${tagLabel}`
+			const tagNodeId = getTagNodeId(category, tagLabel)
 
-			if (!tagNodeIds[tagKey]) {
-				const tagNodeID = tagNodeCounter++
-				tagNodeIds[tagKey] = tagNodeID
-				nodes.add({
-					id: tagNodeID,
+			if (!nodes.has(tagNodeId)) {
+				nodes.set(tagNodeId, {
+					id: tagNodeId,
+					type: 'tag',
 					label: tagLabel,
 					shape: 'diamond',
 					color: '#0ea5e9',
 					size: 22,
 				})
-				edges.add({
-					from: categoryNodeID,
-					to: tagNodeID,
-					color: '#9ca3af',
-					arrows: 'to',
-				})
 			}
 
-			edges.add({
-				from: tagNodeIds[tagKey],
-				to: nodeID,
-				color: '#9ca3af',
-				arrows: 'to',
+			edges.set(getEdgeId(categoryNodeId, tagNodeId), {
+				id: getEdgeId(categoryNodeId, tagNodeId),
+				from: categoryNodeId,
+				to: tagNodeId,
+				...EDGE_STYLE,
 			})
+
+			edges.set(getEdgeId(tagNodeId, fileNode.id), {
+				id: getEdgeId(tagNodeId, fileNode.id),
+				from: tagNodeId,
+				to: fileNode.id,
+				...EDGE_STYLE,
+			})
+
 			return
 		}
 
-		edges.add({ from: categoryNodeID, to: nodeID, color: '#9ca3af', arrows: 'to' })
+		edges.set(getEdgeId(categoryNodeId, fileNode.id), {
+			id: getEdgeId(categoryNodeId, fileNode.id),
+			from: categoryNodeId,
+			to: fileNode.id,
+			...EDGE_STYLE,
+		})
 	})
+
+	return { nodes, edges }
+}
+
+function syncNodes(desiredNodes) {
+	const existingNodeIds = new Set(activeNodes.getIds())
+	const desiredNodeIds = new Set(desiredNodes.keys())
+	const nodesToAdd = []
+	const nodesToUpdate = []
+	const nodesToRemove = []
+
+	for (const [nodeId, node] of desiredNodes.entries()) {
+		if (existingNodeIds.has(nodeId)) {
+			nodesToUpdate.push(node)
+		} else {
+			nodesToAdd.push(applySavedPosition(node))
+		}
+	}
+
+	existingNodeIds.forEach(nodeId => {
+		if (!desiredNodeIds.has(nodeId)) {
+			nodesToRemove.push(nodeId)
+		}
+	})
+
+	if (nodesToRemove.length > 0) {
+		activeNodes.remove(nodesToRemove)
+		nodesToRemove.forEach(nodeId => savedNodePositions.delete(nodeId))
+	}
+	if (nodesToAdd.length > 0) activeNodes.add(nodesToAdd)
+	if (nodesToUpdate.length > 0) activeNodes.update(nodesToUpdate)
+}
+
+function syncEdges(desiredEdges) {
+	const existingEdgeIds = new Set(activeEdges.getIds())
+	const desiredEdgeIds = new Set(desiredEdges.keys())
+	const edgesToAdd = []
+	const edgesToUpdate = []
+	const edgesToRemove = []
+
+	for (const [edgeId, edge] of desiredEdges.entries()) {
+		if (existingEdgeIds.has(edgeId)) {
+			edgesToUpdate.push(edge)
+		} else {
+			edgesToAdd.push(edge)
+		}
+	}
+
+	existingEdgeIds.forEach(edgeId => {
+		if (!desiredEdgeIds.has(edgeId)) {
+			edgesToRemove.push(edgeId)
+		}
+	})
+
+	if (edgesToRemove.length > 0) activeEdges.remove(edgesToRemove)
+	if (edgesToAdd.length > 0) activeEdges.add(edgesToAdd)
+	if (edgesToUpdate.length > 0) activeEdges.update(edgesToUpdate)
+}
+
+function applyZoomLabels(scale) {
+	const nextMode = getLabelModeByScale(scale)
+	if (nextMode === currentLabelMode) return
+
+	currentLabelMode = nextMode
+	const updates = []
+
+	activeNodes.forEach(node => {
+		if (node.type !== 'file') return
+
+		const newLabel = resolveFileLabel(
+			currentLabelMode,
+			node.shortLabel,
+			node.mediumLabel,
+			node.fullLabel
+		)
+		if (node.label !== newLabel) {
+			updates.push({ id: node.id, label: newLabel })
+		}
+	})
+
+	if (updates.length > 0) {
+		activeNodes.update(updates)
+	}
+}
+
+function setupNetworkHandlers() {
+	const menu = ensureContextMenu()
+
+	networkInstance.on('oncontext', params => {
+		params.event.preventDefault()
+
+		const pointer = params.pointer.DOM
+		const nodeId = networkInstance.getNodeAt(pointer)
+		if (!nodeId) {
+			menu.style.display = 'none'
+			return
+		}
+
+		const node = activeNodes.get(nodeId)
+		if (!node || !node.downloadUrl) {
+			menu.style.display = 'none'
+			return
+		}
+
+		menu.innerHTML = `
+                <div class="font-semibold mb-1">${escapeHtml(node.fileName || 'File')}</div>
+                <div class="text-xs text-gray-700 mb-2">
+                    ${escapeHtml(formatBytes(node.fileSize))} | ${escapeHtml(node.createdAt || '')}
+                </div>
+                <div class="text-xs text-gray-700 mb-2">
+                    status: ${escapeHtml(node.status || 'N/A')}<br/>
+                    tag: ${escapeHtml(node.tag || '-')}
+                </div>
+                ${node.failureCause
+				? `<div class="text-xs text-red-600 mb-2">failure: ${escapeHtml(node.failureCause)}</div>`
+				: ''
+			}
+                <button class="graph-btn w-full download-btn" data-url="${escapeHtml(node.downloadUrl)}">
+                    Download
+                </button>
+                <button class="graph-btn w-full mt-1 delete-btn" data-url="${escapeHtml(node.deleteUrl)}" data-node="${escapeHtml(node.id)}">
+                    Delete
+                </button>
+            `
+
+		menu.style.left = pointer.x + window.scrollX + 5 + 'px'
+		menu.style.top = pointer.y + window.scrollY + 5 + 'px'
+		menu.style.display = 'block'
+	})
+
+	networkInstance.on('dragStart', () => {
+		menu.style.display = 'none'
+	})
+
+	networkInstance.on('dragEnd', () => {
+		saveNodePositions()
+	})
+
+	networkInstance.on('zoom', params => {
+		menu.style.display = 'none'
+		applyZoomLabels(params.scale)
+	})
+
+	networkInstance.on('deselectNode', () => {
+		menu.style.display = 'none'
+	})
+
+	networkInstance.once('stabilized', () => {
+		saveNodePositions()
+	})
+}
+
+function ensureNetwork(container) {
+	ensureDataSets()
+
+	if (networkInstance) return
 
 	networkInstance = new Network(
 		container,
-		{ nodes, edges },
+		{ nodes: activeNodes, edges: activeEdges },
 		{
 			nodes: { borderWidth: 2, shadow: true },
 			edges: { width: 2, smooth: true, font: { size: 12, strokeWidth: 0 } },
@@ -226,88 +486,24 @@ export function initUserGraph(username, files) {
 		}
 	)
 
-	const menu = ensureContextMenu()
+	setupNetworkHandlers()
+	applyZoomLabels(networkInstance.getScale())
+}
 
-	networkInstance.on('oncontext', params => {
-		params.event.preventDefault()
+export function initUserGraph(username, files) {
+	const container = document.getElementById('graph-container')
+	if (!container) return false
 
-		const pointer = params.pointer.DOM
-		const nodeID = networkInstance.getNodeAt(pointer)
-		if (!nodeID) {
-			menu.style.display = 'none'
-			return
-		}
+	ensureNetwork(container)
+	saveNodePositions()
 
-		const node = nodes.get(nodeID)
-		if (!node || !node.downloadUrl) {
-			menu.style.display = 'none'
-			return
-		}
+	const normalizedFiles = Array.isArray(files) ? files : []
+	const desired = buildDesiredGraph(username, normalizedFiles)
+	syncNodes(desired.nodes)
+	syncEdges(desired.edges)
 
-		menu.innerHTML = `
-            <div class="font-semibold mb-1">${escapeHtml(node.fileName || 'File')}</div>
-            <div class="text-xs text-gray-700 mb-2">
-                ${escapeHtml(formatBytes(node.fileSize))} | ${escapeHtml(node.createdAt || '')}
-            </div>
-            <div class="text-xs text-gray-700 mb-2">
-                status: ${escapeHtml(node.status || 'N/A')}<br/>
-                tag: ${escapeHtml(node.tag || '-')}
-            </div>
-            ${
-							node.failureCause
-								? `<div class="text-xs text-red-600 mb-2">failure: ${escapeHtml(
-										node.failureCause
-								  )}</div>`
-								: ''
-						}
-            <button class="graph-btn w-full download-btn" data-url="${escapeHtml(node.downloadUrl)}">
-                Download
-            </button>
-            <button class="graph-btn w-full mt-1 delete-btn" data-url="${escapeHtml(node.deleteUrl)}" data-node="${
-							node.id
-						}">
-                Delete
-            </button>
-        `
-
-		menu.style.left = pointer.x + window.scrollX + 5 + 'px'
-		menu.style.top = pointer.y + window.scrollY + 5 + 'px'
-		menu.style.display = 'block'
-	})
-
-	networkInstance.on('dragStart', () => {
-		menu.style.display = 'none'
-	})
-	networkInstance.on('zoom', () => {
-		menu.style.display = 'none'
-	})
-	networkInstance.on('deselectNode', () => {
-		menu.style.display = 'none'
-	})
-
-	const LEVELS = [
-		{ scale: 0, show: 'short' },
-		{ scale: 1.7, show: 'medium' },
-		{ scale: 2.6, show: 'full' },
-	]
-
-	networkInstance.on('zoom', params => {
-		const scale = params.scale
-		const level =
-			LEVELS.slice()
-				.reverse()
-				.find(item => scale >= item.scale) || LEVELS[0]
-
-		nodes.forEach(node => {
-			let newLabel = node.label
-			if (level.show === 'short' && node.shortLabel) newLabel = node.shortLabel
-			if (level.show === 'medium' && node.mediumLabel) newLabel = node.mediumLabel
-			if (level.show === 'full' && node.fullLabel) newLabel = node.fullLabel
-			if (node.label !== newLabel) {
-				nodes.update({ id: node.id, label: newLabel })
-			}
-		})
-	})
+	lastGraphFingerprint = getGraphFingerprint(username, normalizedFiles)
+	return true
 }
 
 function escapeHtml(value) {
@@ -351,4 +547,25 @@ function wrapLabel(text, lineLength = 20) {
 	const lines = name.match(regex) || []
 	if (ext) lines.push(ext)
 	return lines.join('\n')
+}
+
+export function getGraphState() {
+	return {
+		networkInstance,
+		activeNodes,
+		activeEdges,
+		savedNodePositions,
+	}
+}
+
+export function updateUserGraph(username, files) {
+	const normalizedFiles = Array.isArray(files) ? files : []
+	const nextFingerprint = getGraphFingerprint(username, normalizedFiles)
+
+	if (networkInstance && nextFingerprint === lastGraphFingerprint) {
+		return false
+	}
+
+	initUserGraph(username, normalizedFiles)
+	return true
 }

@@ -1,0 +1,6 @@
+aiokafka>=0.10
+aiohttp>=3.9
+redis>=5.0
+asyncpg>=0.29
+pypdf>=4.0
+python-docx>=1.1

@@ -1,16 +1,14 @@
-FROM golang:1.24-alpine AS builder
-
-RUN apk add --no-cache git ca-certificates
+FROM python:3.12-slim
 
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN go mod tidy
-RUN CGO_ENABLED=0 go build -o parser main.go
 
-FROM alpine:latest
-WORKDIR /root/
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /app/parser .
-CMD ["./parser"]
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]

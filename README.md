@@ -2,7 +2,7 @@
 
 Платформа для загрузки файлов и асинхронной обработки текста:
 - backend (Go + Templ + HTMX)
-- parser worker (Go)
+- parser worker (Python)
 - ML service (Python + NeoBERT)
 - Kafka, DragonflyDB (Redis), PostgreSQL, SeaweedFS
 

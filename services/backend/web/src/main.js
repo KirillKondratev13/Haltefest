@@ -3,11 +3,51 @@ import { updateUserGraph } from './graph'
 
 const FILES_DATA_URL = '/profile/files/data'
 const POLL_INTERVAL_MS = 5000
+const ANALYSIS_POLL_INTERVAL_MS = 2500
 
 let refreshInFlight = false
 let pollingId = null
 let lastFilesData = null // Кэшируем последние данные
 let lastUsername = null
+let analysisPollingId = null
+let analysisPollInFlight = false
+
+const analysisState = {
+	selectedFileId: null,
+	selectedFileName: '',
+	selectedAnalysisType: '',
+	activeJobId: null,
+	activeJobStatus: '',
+	resultText: '',
+	resultError: '',
+	updatedAt: '',
+	connectionIssue: '',
+}
+
+function analysisStartUrl(fileId) {
+	return `/api/files/${encodeURIComponent(fileId)}/analysis`
+}
+
+function analysisJobUrl(jobId) {
+	return `/api/analysis-jobs/${encodeURIComponent(jobId)}`
+}
+
+function analysisTypeLabel(analysisType) {
+	switch ((analysisType || '').toLowerCase()) {
+		case 'summary':
+			return 'Summary'
+		case 'chapters':
+			return 'Chapters'
+		case 'flashcards':
+			return 'Flashcards'
+		default:
+			return analysisType || '-'
+	}
+}
+
+function formatTimestamp(dateValue = new Date()) {
+	return dateValue.toLocaleString()
+}
 
 function escapeHtml(value) {
 	if (value === null || value === undefined) return ''
@@ -166,6 +206,232 @@ function renderFilesTable(files) {
     `
 }
 
+function ensureAnalysisPanelRoot() {
+	let root = document.getElementById('analysis-panel-root')
+	if (root) return root
+
+	const graphContainer = document.getElementById('graph-container')
+	if (!graphContainer) return null
+
+	root = document.createElement('section')
+	root.id = 'analysis-panel-root'
+	root.className = 'w-full max-w-6xl mx-auto mt-4 px-4'
+
+	const wrapper = graphContainer.parentElement
+	if (wrapper && wrapper.parentElement) {
+		wrapper.parentElement.insertBefore(root, wrapper.nextSibling)
+	} else {
+		graphContainer.insertAdjacentElement('afterend', root)
+	}
+
+	return root
+}
+
+function renderAnalysisPanel() {
+	const root = ensureAnalysisPanelRoot()
+	if (!root) return
+
+	const previousPre = root.querySelector('[data-analysis-result-pre]')
+	const previousScrollTop = previousPre ? previousPre.scrollTop : 0
+
+	const hasSelection =
+		analysisState.selectedFileId !== null &&
+		analysisState.selectedAnalysisType !== ''
+
+	if (!hasSelection) {
+		const nextHtml = `
+            <div class="border border-base-300 rounded-lg bg-base-100 text-base-content shadow-md p-4">
+                <h3 class="text-lg font-semibold mb-2">Analysis Result</h3>
+                <p class="text-sm opacity-70">Выберите файл и тип анализа.</p>
+            </div>
+        `
+		if (root.dataset.analysisRenderHtml === nextHtml) return
+		root.innerHTML = nextHtml
+		root.dataset.analysisRenderHtml = nextHtml
+		return
+	}
+
+	const statusValue = (analysisState.activeJobStatus || '').toUpperCase()
+	const updatedAt = escapeHtml(analysisState.updatedAt || '-')
+	const fileName = escapeHtml(analysisState.selectedFileName || 'File')
+	const analysisLabel = escapeHtml(
+		analysisTypeLabel(analysisState.selectedAnalysisType)
+	)
+	const resultText = escapeHtml(analysisState.resultText || '')
+	const resultError = escapeHtml(analysisState.resultError || '')
+	const connectionIssue = escapeHtml(analysisState.connectionIssue || '')
+
+	let contentHtml = '<p class="text-sm opacity-80">Ожидание запуска анализа...</p>'
+
+	if (statusValue === 'QUEUED' || statusValue === 'PROCESSING') {
+		contentHtml = `
+            <div class="flex items-center gap-2 text-sm opacity-80">
+                <span class="loading loading-spinner loading-sm"></span>
+                <span>${statusValue === 'QUEUED' ? 'Задача в очереди...' : 'Анализ выполняется...'}</span>
+            </div>
+        `
+	} else if (statusValue === 'DONE') {
+		contentHtml = `
+            <pre data-analysis-result-pre class="whitespace-pre-wrap text-sm leading-6 bg-base-200 text-base-content border border-base-300 rounded p-3 max-h-[360px] overflow-y-auto">${resultText || '-'}</pre>
+        `
+	} else if (statusValue === 'FAILED') {
+		contentHtml = `
+            <div class="space-y-2">
+                <p class="text-sm text-red-600">${resultError || 'Анализ завершился с ошибкой.'}</p>
+                <button class="btn btn-sm btn-error" type="button" data-analysis-retry>Повторить</button>
+            </div>
+        `
+	}
+
+	const nextHtml = `
+        <div class="border border-base-300 rounded-lg bg-base-100 text-base-content shadow-md p-4">
+            <div class="flex flex-wrap items-center gap-3 mb-3">
+                <h3 class="text-lg font-semibold mr-auto">Analysis Result</h3>
+                <span class="text-sm opacity-70">File: <b>${fileName}</b></span>
+                <span class="text-sm opacity-70">Type: <b>${analysisLabel}</b></span>
+                <span>${statusBadge(statusValue || 'N/A')}</span>
+                <span class="text-xs opacity-60">Updated: ${updatedAt}</span>
+            </div>
+            ${connectionIssue ? `<p class="text-sm text-warning mb-2">${connectionIssue}</p>` : ''}
+            ${contentHtml}
+        </div>
+    `
+
+	if (root.dataset.analysisRenderHtml === nextHtml) return
+
+	root.innerHTML = nextHtml
+	root.dataset.analysisRenderHtml = nextHtml
+
+	const nextPre = root.querySelector('[data-analysis-result-pre]')
+	if (nextPre && previousPre) {
+		const maxScrollTop = Math.max(0, nextPre.scrollHeight - nextPre.clientHeight)
+		nextPre.scrollTop = Math.min(previousScrollTop, maxScrollTop)
+	}
+}
+
+function stopAnalysisPolling() {
+	if (analysisPollingId !== null) {
+		window.clearInterval(analysisPollingId)
+		analysisPollingId = null
+	}
+}
+
+function normalizeApiError(message, fallback = 'Request failed') {
+	const text = (message || '').trim()
+	return text || fallback
+}
+
+function extractResultText(result) {
+	if (!result) return ''
+	if (typeof result === 'string') return result
+	if (typeof result.result_text === 'string') return result.result_text
+	return JSON.stringify(result, null, 2)
+}
+
+async function pollAnalysisJobOnce(jobId) {
+	if (!jobId || analysisPollInFlight) return
+	analysisPollInFlight = true
+
+	try {
+		const response = await fetch(analysisJobUrl(jobId), {
+			headers: { Accept: 'application/json' },
+		})
+		if (!response.ok) {
+			const body = await response.text()
+			throw new Error(normalizeApiError(body, response.statusText))
+		}
+
+		const payload = await response.json()
+		analysisState.activeJobStatus = String(payload.status || '').toUpperCase()
+		analysisState.resultError = payload.error || ''
+		analysisState.connectionIssue = ''
+		analysisState.updatedAt = formatTimestamp()
+
+		if (analysisState.activeJobStatus === 'DONE') {
+			analysisState.resultText = extractResultText(payload.result)
+			stopAnalysisPolling()
+		} else if (analysisState.activeJobStatus === 'FAILED') {
+			stopAnalysisPolling()
+		}
+
+		renderAnalysisPanel()
+	} catch (err) {
+		analysisState.connectionIssue = 'Проблема соединения, повторяем...'
+		renderAnalysisPanel()
+		console.error('Failed to poll analysis job', err)
+	} finally {
+		analysisPollInFlight = false
+	}
+}
+
+function startAnalysisPolling(jobId) {
+	stopAnalysisPolling()
+	if (!jobId) return
+
+	void pollAnalysisJobOnce(jobId)
+	analysisPollingId = window.setInterval(() => {
+		void pollAnalysisJobOnce(jobId)
+	}, ANALYSIS_POLL_INTERVAL_MS)
+}
+
+async function startAnalysisRequest(fileId, fileName, analysisType) {
+	if (!fileId || !analysisType) return
+
+	analysisState.selectedFileId = fileId
+	analysisState.selectedFileName = fileName || `file_${fileId}`
+	analysisState.selectedAnalysisType = analysisType
+	analysisState.resultText = ''
+	analysisState.resultError = ''
+	analysisState.connectionIssue = ''
+	analysisState.activeJobStatus = 'QUEUED'
+	analysisState.updatedAt = formatTimestamp()
+	renderAnalysisPanel()
+
+	const panelRoot = ensureAnalysisPanelRoot()
+	if (panelRoot) {
+		panelRoot.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+	}
+
+	try {
+		const response = await fetch(analysisStartUrl(fileId), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+			},
+			body: JSON.stringify({
+				analysis_type: analysisType,
+				params: analysisType === 'flashcards' ? { max_cards: 10 } : {},
+			}),
+		})
+
+		if (!response.ok) {
+			const body = await response.text()
+			throw new Error(normalizeApiError(body, response.statusText))
+		}
+
+		const payload = await response.json()
+		analysisState.activeJobId = payload.job_id || null
+		analysisState.activeJobStatus = String(payload.status || 'QUEUED').toUpperCase()
+		analysisState.updatedAt = formatTimestamp()
+		analysisState.connectionIssue = ''
+		renderAnalysisPanel()
+
+		if (analysisState.activeJobStatus === 'DONE') {
+			await pollAnalysisJobOnce(analysisState.activeJobId)
+			return
+		}
+
+		startAnalysisPolling(analysisState.activeJobId)
+	} catch (err) {
+		stopAnalysisPolling()
+		analysisState.activeJobStatus = 'FAILED'
+		analysisState.resultError = normalizeApiError(err?.message, 'Ошибка запуска анализа')
+		analysisState.updatedAt = formatTimestamp()
+		renderAnalysisPanel()
+	}
+}
+
 function readInitialFileData() {
 	const fileDataEl = document.getElementById('file-data')
 	if (!fileDataEl) return null
@@ -197,6 +463,38 @@ function renderProfileData(payload, forceUpdate = false) {
 	if (hasFilesChanged || hasUsernameChanged || forceUpdate) {
 		lastFilesData = files
 		lastUsername = username
+	}
+
+	if (analysisState.selectedFileId !== null) {
+		const selectedFile = files.find(
+			file => Number(file.ID) === Number(analysisState.selectedFileId)
+		)
+		let shouldRenderAnalysisPanel = false
+
+		if (!selectedFile) {
+			stopAnalysisPolling()
+			analysisState.selectedFileId = null
+			analysisState.selectedFileName = ''
+			analysisState.selectedAnalysisType = ''
+			analysisState.activeJobId = null
+			analysisState.activeJobStatus = ''
+			analysisState.resultText = ''
+			analysisState.resultError = ''
+			analysisState.connectionIssue = ''
+			analysisState.updatedAt = ''
+			shouldRenderAnalysisPanel = true
+		} else {
+			const nextFileName =
+				selectedFile.FileName || analysisState.selectedFileName
+			if (nextFileName !== analysisState.selectedFileName) {
+				analysisState.selectedFileName = nextFileName
+				shouldRenderAnalysisPanel = true
+			}
+		}
+
+		if (shouldRenderAnalysisPanel) {
+			renderAnalysisPanel()
+		}
 	}
 }
 
@@ -297,6 +595,35 @@ function startPolling() {
 	}, POLL_INTERVAL_MS)
 }
 
+function setupAnalysisActions() {
+	window.addEventListener('graph:analysis-requested', event => {
+		const detail = event?.detail || {}
+		void startAnalysisRequest(
+			Number(detail.fileId || 0),
+			String(detail.fileName || ''),
+			String(detail.analysisType || '')
+		)
+	})
+
+	document.addEventListener('click', event => {
+		const retryButton = event.target.closest('[data-analysis-retry]')
+		if (!retryButton) return
+
+		if (
+			analysisState.selectedFileId === null ||
+			!analysisState.selectedAnalysisType
+		) {
+			return
+		}
+
+		void startAnalysisRequest(
+			analysisState.selectedFileId,
+			analysisState.selectedFileName,
+			analysisState.selectedAnalysisType
+		)
+	})
+}
+
 document.addEventListener('DOMContentLoaded', function () {
 	const initialFileData = readInitialFileData()
 	if (initialFileData) {
@@ -305,8 +632,10 @@ document.addEventListener('DOMContentLoaded', function () {
 		startPolling()
 	}
 
+	renderAnalysisPanel()
 	setupUploadForm()
 	setupFilesTableActions()
+	setupAnalysisActions()
 })
 
 window.addEventListener('graph:file-deleted', () => {

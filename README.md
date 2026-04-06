@@ -4,6 +4,8 @@
 - backend (Go + Templ + HTMX)
 - parser worker (Python)
 - ML service (Python + NeoBERT)
+- indexer service (Python, baseline indexing flow)
+- llm-analysis service (Python, baseline analysis flow)
 - Kafka, DragonflyDB (Redis), PostgreSQL, SeaweedFS
 
 ## Быстрый старт
@@ -34,6 +36,8 @@ docker compose up -d --build
 tail -f logs/haltefest-backend/current.log
 tail -f logs/haltefest-parser/current.log
 tail -f logs/haltefest-ml/current.log
+tail -f logs/haltefest-indexer/current.log
+tail -f logs/haltefest-llm-analysis/current.log
 ```
 
 ## Локальная разработка
@@ -64,6 +68,8 @@ docker compose up -d --build backend
 - `services/backend` - web backend и frontend-ассеты
 - `services/parser` - parser worker
 - `services/ml` - ML классификатор
+- `services/indexer` - сервис индексации canonical текста
+- `services/llm_analysis` - сервис асинхронного анализа (summary/chapters/flashcards)
 - `docker-compose.yml` - оркестрация окружения
 - `scripts/collect-container-logs.sh` - сбор runtime-логов контейнеров в файлы
 - `docs/` - локальная проектная документация (игнорируется git)

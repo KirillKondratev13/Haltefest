@@ -23,6 +23,13 @@ type FileHandler struct {
 	KafkaWriter KafkaWriter
 }
 
+type filesToParseEvent struct {
+	FileID   int    `json:"file_id"`
+	UserID   int    `json:"user_id"`
+	S3Path   string `json:"s3_path"`
+	MimeType string `json:"mime_type"`
+}
+
 const (
 	mimeTypePDF  = "application/pdf"
 	mimeTypeDOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -255,10 +262,11 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if isSupported {
-		payload := map[string]interface{}{
-			"file_id":   fileID,
-			"s3_path":   filerPath,
-			"mime_type": fileType,
+		payload := filesToParseEvent{
+			FileID:   fileID,
+			UserID:   user.ID,
+			S3Path:   filerPath,
+			MimeType: fileType,
 		}
 		if err := fh.KafkaWriter.WriteMessages(r.Context(), payload); err != nil {
 			slog.Error("failed to emit kafka event", "error", err, "file_id", fileID, "mime_type", fileType, "decision_reason", decisionReason)

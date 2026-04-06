@@ -1,0 +1,4 @@
+aiokafka>=0.10
+aiohttp>=3.9
+asyncpg>=0.29
+qdrant-client>=1.9

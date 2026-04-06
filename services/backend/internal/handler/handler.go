@@ -59,6 +59,10 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 		r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
 	})
 
+	r.Post("/api/files/{file_id}/analysis", handler(fileHandler.handleStartAnalysis))
+	r.Get("/api/analysis-jobs/{job_id}", handler(fileHandler.handleGetAnalysisJob))
+	r.Get("/api/files/{file_id}/analysis", handler(fileHandler.handleGetLatestAnalysis))
+
 	r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
 }
 

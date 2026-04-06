@@ -1,4 +1,4 @@
-﻿BINPATH = bin/myapp
+BINPATH = bin/myapp
 TEMPL = $(HOME)/go/bin/templ
 
 .PHONY: build
@@ -14,19 +14,19 @@ build-templ:
 
 .PHONY: build-css
 build-css:
-				npm --prefix web run build:css
+	cd web && npm run build:css
 
 .PHONY: build-js
 build-js:
-				npm --prefix web run build:js
+	cd web && npm run build:js
 
 .PHONY: run
 run: build
-				$(BINPATH)
+	$(BINPATH)
 
 .PHONY: watch
 watch:
-				$(MAKE) -j4 watch-app watch-templ watch-css watch-js
+	$(MAKE) -j4 watch-app watch-templ watch-css watch-js
 
 .PHONY: watch-app
 watch-app:
@@ -38,18 +38,18 @@ watch-app:
 
 .PHONY: watch-templ
 watch-templ:
-				$(TEMPL) generate \
-				--watch \
-				--proxy="http://localhost:8081" \
-				--open-browser=false
+	$(TEMPL) generate \
+	--watch \
+	--proxy="http://localhost:8081" \
+	--open-browser=false
 
 .PHONY: watch-css
 watch-css:
-				npm --prefix web run watch:css
+	cd web && npm run watch:css
 
 .PHONY: watch-js
 watch-js:
-				npm --prefix web run watch:js
+	cd web && npm run watch:js
 
 .PHONY: fmt
 fmt:

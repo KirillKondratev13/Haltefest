@@ -39,121 +39,125 @@ func (kp *kafkaProducer) WriteMessages(ctx context.Context, msgs ...interface{})
 }
 
 func Run(ctx context.Context) error {
-    cfg := config.NewConfig()
+	cfg := config.NewConfig()
 
-    // Подключение к базе данных
-    dbpool, err := pgxpool.New(ctx, cfg.DBConnStr)
-    if err != nil {
-        slog.Error("Unable to connect to database", slog.String("error", err.Error()))
-        return err
-    }
-    defer dbpool.Close()
+	// Подключение к базе данных
+	dbpool, err := pgxpool.New(ctx, cfg.DBConnStr)
+	if err != nil {
+		slog.Error("Unable to connect to database", slog.String("error", err.Error()))
+		return err
+	}
+	defer dbpool.Close()
 
-    // Запуск миграций
-    if err := runMigrations(ctx, dbpool); err != nil {
-        slog.Error("Failed to run migrations", slog.String("error", err.Error()))
-        return err
-    }
+	// Запуск миграций
+	if err := runMigrations(ctx, dbpool); err != nil {
+		slog.Error("Failed to run migrations", slog.String("error", err.Error()))
+		return err
+	}
 
-    // Создаем сервисы
-    userService := &service.UserService{DB: dbpool}
-    fileService := &service.FileService{DB: dbpool}
+	// Создаем сервисы
+	userService := &service.UserService{DB: dbpool}
+	fileService := &service.FileService{DB: dbpool}
 
-    // Инициализация Kafka
-    kafkaWriter := &kafka.Writer{
-        Addr:     kafka.TCP(cfg.KafkaBrokers),
-        Topic:    "files-to-parse",
-        Balancer: &kafka.LeastBytes{},
-    }
-    defer kafkaWriter.Close()
+	// Инициализация Kafka
+	kafkaWriter := &kafka.Writer{
+		Addr:     kafka.TCP(cfg.KafkaBrokers),
+		Topic:    "files-to-parse",
+		Balancer: &kafka.LeastBytes{},
+	}
+	defer kafkaWriter.Close()
 
-    kp := &kafkaProducer{writer: kafkaWriter}
+	kp := &kafkaProducer{writer: kafkaWriter}
 
-    r := chi.NewRouter()
-    handler.RegisterRoutes(r, handler.Dependencies{
-        AssetsFS:    http.Dir(cfg.AssetsDir),
-        UserService: userService,
-        FileService: fileService,
-        Config:      cfg,
-        KafkaWriter: kp,
-    })
+	relay := newOutboxRelay(dbpool, cfg.KafkaBrokers)
+	defer relay.Close()
+	go relay.Run(ctx)
 
-    s := http.Server{
-        Addr:    cfg.ServerAddr,
-        Handler: r,
-    }
+	r := chi.NewRouter()
+	handler.RegisterRoutes(r, handler.Dependencies{
+		AssetsFS:    http.Dir(cfg.AssetsDir),
+		UserService: userService,
+		FileService: fileService,
+		Config:      cfg,
+		KafkaWriter: kp,
+	})
 
-    go func() {
-        <-ctx.Done()
-        slog.Info("shutting down server")
-        // Используем новый контекст с таймаутом для завершения работы
-        shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
-        s.Shutdown(shutdownCtx)
-    }()
+	s := http.Server{
+		Addr:    cfg.ServerAddr,
+		Handler: r,
+	}
 
-    slog.Info("starting server", slog.String("addr", cfg.ServerAddr))
-    if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-        return err
-    }
+	go func() {
+		<-ctx.Done()
+		slog.Info("shutting down server")
+		// Используем новый контекст с таймаутом для завершения работы
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.Shutdown(shutdownCtx)
+	}()
 
-    return nil
+	slog.Info("starting server", slog.String("addr", cfg.ServerAddr))
+	if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
 }
 
 func runMigrations(ctx context.Context, db *pgxpool.Pool) error {
-    slog.Info("Running migrations...")
-    
-    // Создаем таблицу миграций, если её нет
-    _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)`)
-    if err != nil {
-        return err
-    }
+	slog.Info("Running migrations...")
 
-    files, err := os.ReadDir("internal/migrations")
-    if err != nil {
-        return err
-    }
+	// Создаем таблицу миграций, если её нет
+	_, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)`)
+	if err != nil {
+		return err
+	}
 
-    var migrationFiles []string
-    for _, f := range files {
-        if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" && strings.HasSuffix(f.Name(), ".up.sql") {
-            migrationFiles = append(migrationFiles, f.Name())
-        }
-    }
-    sort.Strings(migrationFiles)
+	files, err := os.ReadDir("internal/migrations")
+	if err != nil {
+		return err
+	}
 
-    for _, filename := range migrationFiles {
-        var exists bool
-        err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", filename).Scan(&exists)
-        if err != nil {
-            return err
-        }
+	var migrationFiles []string
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".sql" && strings.HasSuffix(f.Name(), ".up.sql") {
+			migrationFiles = append(migrationFiles, f.Name())
+		}
+	}
+	sort.Strings(migrationFiles)
 
-        if exists {
-            continue
-        }
+	for _, filename := range migrationFiles {
+		var exists bool
+		err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", filename).Scan(&exists)
+		if err != nil {
+			return err
+		}
 
-        slog.Info("Applying migration", slog.String("file", filename))
-        content, err := os.ReadFile(filepath.Join("internal/migrations", filename))
-        if err != nil {
-            return err
-        }
+		if exists {
+			continue
+		}
 
-        sql := string(content)
-        // Убираем BOM (Byte Order Mark) если он есть
-        sql = strings.TrimPrefix(sql, "\ufeff")
+		slog.Info("Applying migration", slog.String("file", filename))
+		content, err := os.ReadFile(filepath.Join("internal/migrations", filename))
+		if err != nil {
+			return err
+		}
 
-        _, err = db.Exec(ctx, sql)
-        if err != nil {
-            return fmt.Errorf("failed to apply %s: %w", filename, err)
-        }
+		sql := string(content)
+		// Убираем BOM (Byte Order Mark) если он есть
+		sql = strings.TrimPrefix(sql, "\ufeff")
 
-        _, err = db.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", filename)
-        if err != nil {
-            return err
-        }
-    }
+		_, err = db.Exec(ctx, sql)
+		if err != nil {
+			return fmt.Errorf("failed to apply %s: %w", filename, err)
+		}
 
-    slog.Info("Migrations completed successfully")
-    return nil
+		_, err = db.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", filename)
+		if err != nil {
+			return err
+		}
+	}
+
+	slog.Info("Migrations completed successfully")
+	return nil
 }

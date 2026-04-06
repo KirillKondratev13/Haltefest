@@ -48,9 +48,30 @@ function ensureContextMenu() {
 	contextMenu.addEventListener('click', async event => {
 		const downloadButton = event.target.closest('.download-btn')
 		const deleteButton = event.target.closest('.delete-btn')
+		const analysisButton = event.target.closest('.analysis-btn')
 
 		if (downloadButton) {
 			window.open(downloadButton.dataset.url, '_blank')
+			contextMenu.style.display = 'none'
+			return
+		}
+
+		if (analysisButton) {
+			if (analysisButton.disabled) return
+
+			const fileId = Number(analysisButton.dataset.fileId || '')
+			const analysisType = analysisButton.dataset.analysisType || ''
+			if (!Number.isFinite(fileId) || fileId <= 0 || !analysisType) return
+
+			window.dispatchEvent(
+				new CustomEvent('graph:analysis-requested', {
+					detail: {
+						fileId,
+						fileName: analysisButton.dataset.fileName || 'File',
+						analysisType,
+					},
+				})
+			)
 			contextMenu.style.display = 'none'
 			return
 		}
@@ -220,6 +241,7 @@ function buildFileNode(file) {
 		status,
 		tag,
 		failureCause: file.FailureCause || '',
+		fileId: Number(file.ID) || 0,
 	}
 }
 
@@ -429,6 +451,34 @@ function setupNetworkHandlers() {
                 </button>
                 <button class="graph-btn w-full mt-1 delete-btn" data-url="${escapeHtml(node.deleteUrl)}" data-node="${escapeHtml(node.id)}">
                     Delete
+                </button>
+                <hr class="my-2 border-gray-200"/>
+                <button
+                    class="graph-btn w-full analysis-btn ${node.status !== 'READY' ? 'opacity-60 cursor-not-allowed' : ''}"
+                    data-file-id="${escapeHtml(node.fileId || '')}"
+                    data-file-name="${escapeHtml(node.fileName || 'File')}"
+                    data-analysis-type="summary"
+                    ${node.status !== 'READY' ? 'disabled title="Файл еще не готов к анализу"' : ''}
+                >
+                    Summary
+                </button>
+                <button
+                    class="graph-btn w-full mt-1 analysis-btn ${node.status !== 'READY' ? 'opacity-60 cursor-not-allowed' : ''}"
+                    data-file-id="${escapeHtml(node.fileId || '')}"
+                    data-file-name="${escapeHtml(node.fileName || 'File')}"
+                    data-analysis-type="chapters"
+                    ${node.status !== 'READY' ? 'disabled title="Файл еще не готов к анализу"' : ''}
+                >
+                    Chapters
+                </button>
+                <button
+                    class="graph-btn w-full mt-1 analysis-btn ${node.status !== 'READY' ? 'opacity-60 cursor-not-allowed' : ''}"
+                    data-file-id="${escapeHtml(node.fileId || '')}"
+                    data-file-name="${escapeHtml(node.fileName || 'File')}"
+                    data-analysis-type="flashcards"
+                    ${node.status !== 'READY' ? 'disabled title="Файл еще не готов к анализу"' : ''}
+                >
+                    Flashcards
                 </button>
             `
 

@@ -21,35 +21,7 @@ templ Index(user *service.User, graphData interface{}) {
              <p class="text-lg mt-4">После загрузки ваши файлы будут отображать в унифицированном формате в виде графа, листья(конечные узлы) которого - файлы.</p>
              <p class="text-lg mt-4">Каждый файл будет связан со свой категорией, которая определяется автоматически!.</p>
              <p class="text-lg mt-4">Пройдите регистрацию и попробуйте сами!.</p>
-             <p class="text-lg mt-4">Снизу представлен пример работы.</p>
-            <div id="graphContainer" class="mt-4"></div>
-            <p class="text-lg mt-4">Пример графа.</p>
+             <p class="text-lg mt-4">Пример графа доступен в профиле после входа.</p>
         </div>
-        <script>
-            var nodes = new vis.DataSet([
-                { id: 1, label: 'Username', shape: 'box' },
-                { id: 2, label: 'Category A' },
-                { id: 3, label: 'Category B' },
-                { id: 4, label: 'File 1' },
-                { id: 5, label: 'File 2' },
-                { id: 6, label: 'File 3' }
-            ]);
-
-            var edges = new vis.DataSet([
-                { from: 1, to: 2 },
-                { from: 1, to: 3 },
-                { from: 2, to: 4 },
-                { from: 3, to: 5 },
-                { from: 3, to: 6 }
-            ]);
-
-            var container = document.getElementById('graphContainer');
-            var data = {
-                nodes: nodes,
-                edges: edges
-            };
-            var options = {};
-            var network = new vis.Network(container, data, options);
-        </script>
     }
 }

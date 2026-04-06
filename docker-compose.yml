@@ -33,6 +33,8 @@ services:
       - FILER_URL=http://seaweedfs-filer:8888
       - REDIS_URL=redis://dragonfly:6379
       - DB_CONN_STR=postgres://myappuser:mypassword@postgres:5432/myapp
+      - PARSER_VERSION=parser-1.0.0
+      - TEXT_CANONICAL_PREFIX=/texts
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -67,6 +69,66 @@ services:
         condition: service_started
     volumes:
       - ml_model_cache:/app/model_cache
+    restart: always
+
+  indexer:
+    build: services/indexer
+    container_name: haltefest-indexer
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - DB_CONN_STR=postgres://myappuser:mypassword@postgres:5432/myapp
+      - FILER_URL=http://seaweedfs-filer:8888
+      - KAFKA_TEXT_TO_INDEX_TOPIC=text-to-index
+      - KAFKA_ANALYSIS_DLQ_TOPIC=analysis-dlq
+      - KAFKA_CONSUMER_GROUP=indexer_service_group
+      - MAX_ATTEMPTS=6
+      - QDRANT_URL=http://qdrant:6333
+      - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+      - EMBEDDING_MODEL_VERSION=bge-small-en-v1.5
+      - CHUNKING_VERSION=chunking-v1
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_started
+      seaweedfs-filer:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    volumes:
+      - embedding_model_cache:/root/.cache/huggingface
+    restart: always
+
+  llm-analysis:
+    build: services/llm_analysis
+    container_name: haltefest-llm-analysis
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - DB_CONN_STR=postgres://myappuser:mypassword@postgres:5432/myapp
+      - FILER_URL=http://seaweedfs-filer:8888
+      - KAFKA_ANALYSIS_REQUESTED_TOPIC=analysis-requested
+      - KAFKA_ANALYSIS_DLQ_TOPIC=analysis-dlq
+      - KAFKA_CONSUMER_GROUP=llm_analysis_group
+      - MAX_ATTEMPTS=6
+      - LLM_TIMEOUT_SECONDS=120
+      - LLM_MODEL_NAME=qwen2.5:0.5b
+      - LLM_MODEL_VERSION=qwen2.5-0.5b
+      - PROMPT_VERSION=analysis-v1
+      - OLLAMA_URL=http://ollama:11434
+      - QDRANT_URL=http://qdrant:6333
+      - LLM_MODEL=qwen2.5:0.5b
+      - LLM_MODEL_FALLBACKS=qwen2.5:1.5b
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_started
+      seaweedfs-filer:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_started
     restart: always
 
   postgres:
@@ -127,6 +189,9 @@ services:
         echo 'Creating Kafka topics...'
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic files-to-parse --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic text-to-classify --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic text-to-index --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analysis-requested --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analysis-dlq --partitions 1 --replication-factor 1
         echo 'Topics created:'
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
     restart: "no"
@@ -165,6 +230,52 @@ services:
       - ./seaweedfs_data/filer:/data
     restart: always
 
+  qdrant:
+    image: qdrant/qdrant
+    container_name: haltefest-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: always
+
+  ollama:
+    image: ollama/ollama:0.20.2
+    container_name: haltefest-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: always
+
+  ollama-init:
+    image: ollama/ollama:0.20.2
+    container_name: haltefest-ollama-init
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo 'Waiting for Ollama to be ready...'
+        until ollama list > /dev/null 2>&1; do
+          sleep 2
+        done
+        echo 'Trying to pull preferred models...'
+        for model in qwen2.5:0.5b qwen2.5:1.5b; do
+          echo "Pulling $$model ..."
+          if ollama pull "$$model"; then
+            echo "Model pulled successfully: $$model"
+            exit 0
+          fi
+        done
+        echo 'Failed to pull any preferred model' >&2
+        exit 1
+    restart: "no"
+
   log-collector:
     image: docker:cli
     container_name: haltefest-log-collector
@@ -174,6 +285,14 @@ services:
       parser:
         condition: service_started
       ml:
+        condition: service_started
+      indexer:
+        condition: service_started
+      llm-analysis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      ollama:
         condition: service_started
       postgres:
         condition: service_started
@@ -198,3 +317,6 @@ services:
 volumes:
   postgres_data:
   ml_model_cache:
+  qdrant_data:
+  ollama_data:
+  embedding_model_cache:

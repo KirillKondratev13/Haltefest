@@ -49,6 +49,7 @@ function ensureContextMenu() {
 		const downloadButton = event.target.closest('.download-btn')
 		const deleteButton = event.target.closest('.delete-btn')
 		const analysisButton = event.target.closest('.analysis-btn')
+		const chatButton = event.target.closest('.chat-btn')
 
 		if (downloadButton) {
 			window.open(downloadButton.dataset.url, '_blank')
@@ -69,6 +70,24 @@ function ensureContextMenu() {
 						fileId,
 						fileName: analysisButton.dataset.fileName || 'File',
 						analysisType,
+					},
+				})
+			)
+			contextMenu.style.display = 'none'
+			return
+		}
+
+		if (chatButton) {
+			if (chatButton.disabled) return
+
+			const fileId = Number(chatButton.dataset.fileId || '')
+			if (!Number.isFinite(fileId) || fileId <= 0) return
+
+			window.dispatchEvent(
+				new CustomEvent('graph:chat-open-requested', {
+					detail: {
+						fileId,
+						fileName: chatButton.dataset.fileName || 'File',
 					},
 				})
 			)
@@ -479,6 +498,14 @@ function setupNetworkHandlers() {
                     ${node.status !== 'READY' ? 'disabled title="Файл еще не готов к анализу"' : ''}
                 >
                     Flashcards
+                </button>
+                <button
+                    class="graph-btn w-full mt-1 chat-btn ${node.status !== 'READY' ? 'opacity-60 cursor-not-allowed' : ''}"
+                    data-file-id="${escapeHtml(node.fileId || '')}"
+                    data-file-name="${escapeHtml(node.fileName || 'File')}"
+                    ${node.status !== 'READY' ? 'disabled title="Файл еще не готов для чата"' : ''}
+                >
+                    Chat
                 </button>
             `
 

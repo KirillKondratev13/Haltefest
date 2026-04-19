@@ -62,6 +62,12 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 	r.Post("/api/files/{file_id}/analysis", handler(fileHandler.handleStartAnalysis))
 	r.Get("/api/analysis-jobs/{job_id}", handler(fileHandler.handleGetAnalysisJob))
 	r.Get("/api/files/{file_id}/analysis", handler(fileHandler.handleGetLatestAnalysis))
+	r.Post("/api/chat/threads", handler(fileHandler.handleCreateChatThread))
+	r.Get("/api/chat/threads", handler(fileHandler.handleListChatThreads))
+	r.Get("/api/chat/threads/{thread_id}/messages", handler(fileHandler.handleGetChatMessages))
+	r.Post("/api/chat/threads/{thread_id}/messages", handler(fileHandler.handleCreateChatMessage))
+	r.Delete("/api/chat/threads/{thread_id}", handler(fileHandler.handleDeleteChatThread))
+	r.Get("/api/chat/jobs/{job_id}", handler(fileHandler.handleGetChatJob))
 
 	r.Handle("/assets/*", http.StripPrefix("/assets", http.FileServer(deps.AssetsFS)))
 }

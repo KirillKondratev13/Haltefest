@@ -108,6 +108,8 @@ services:
       - FILER_URL=http://seaweedfs-filer:8888
       - KAFKA_ANALYSIS_REQUESTED_TOPIC=analysis-requested
       - KAFKA_ANALYSIS_DLQ_TOPIC=analysis-dlq
+      - KAFKA_CHAT_REQUESTED_TOPIC=chat-requested
+      - KAFKA_CHAT_DLQ_TOPIC=chat-dlq
       - KAFKA_CONSUMER_GROUP=llm_analysis_group
       - MAX_ATTEMPTS=6
       - LLM_TIMEOUT_SECONDS=120
@@ -118,6 +120,34 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - LLM_MODEL=qwen2.5:0.5b
       - LLM_MODEL_FALLBACKS=qwen2.5:1.5b
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-4096}
+      - GIGACHAT_AUTH_URL=${GIGACHAT_AUTH_URL:-https://ngw.devices.sberbank.ru:9443/api/v2/oauth}
+      - GIGACHAT_API_URL=${GIGACHAT_API_URL:-https://gigachat.devices.sberbank.ru/api/v1}
+      - GIGACHAT_SCOPE=${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      - GIGACHAT_MODEL=${GIGACHAT_MODEL:-GigaChat}
+      - GIGACHAT_TIMEOUT_SECONDS=${GIGACHAT_TIMEOUT_SECONDS:-120}
+      - GIGACHAT_VERIFY_SSL=${GIGACHAT_VERIFY_SSL:-false}
+      - GIGACHAT_AUTH_KEY=${GIGACHAT_AUTH_KEY:-}
+      - GIGACHAT_CLIENT_ID=${GIGACHAT_CLIENT_ID:-}
+      - GIGACHAT_CLIENT_SECRET=${GIGACHAT_CLIENT_SECRET:-}
+      - GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS=${GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS:-60}
+      - DOC_CHAT_EMBEDDING_MODEL=${DOC_CHAT_EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      - DOC_CHAT_SEMANTIC_TOP_K=${DOC_CHAT_SEMANTIC_TOP_K:-10}
+      - DOC_CHAT_BM25_TOP_K=${DOC_CHAT_BM25_TOP_K:-10}
+      - DOC_CHAT_RRF_K=${DOC_CHAT_RRF_K:-60}
+      - DOC_CHAT_HYBRID_FUSED_LIMIT=${DOC_CHAT_HYBRID_FUSED_LIMIT:-40}
+      - DOC_CHAT_BM25_PAGE_SIZE=${DOC_CHAT_BM25_PAGE_SIZE:-256}
+      - DOC_CHAT_BM25_MAX_CHUNKS=${DOC_CHAT_BM25_MAX_CHUNKS:-3000}
+      - RERANKER_URL=${RERANKER_URL:-http://reranker:8090}
+      - RERANKER_TIMEOUT_SECONDS=${RERANKER_TIMEOUT_SECONDS:-60}
+      - DOC_CHAT_RERANK_TOP_K=${DOC_CHAT_RERANK_TOP_K:-20}
+      - DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS=${DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS:-32000}
+      - DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS=${DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS:-0}
+      - DOC_CHAT_RESERVED_SYSTEM_TOKENS=${DOC_CHAT_RESERVED_SYSTEM_TOKENS:-400}
+      - DOC_CHAT_RESERVED_HISTORY_TOKENS=${DOC_CHAT_RESERVED_HISTORY_TOKENS:-0}
+      - DOC_CHAT_RESERVED_OUTPUT_TOKENS=${DOC_CHAT_RESERVED_OUTPUT_TOKENS:-700}
+      - DOC_CHAT_SAFETY_MARGIN_TOKENS=${DOC_CHAT_SAFETY_MARGIN_TOKENS:-300}
+      - DOC_CHAT_CONTEXT_MAX_CHARS=${DOC_CHAT_CONTEXT_MAX_CHARS:-18000}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -129,6 +159,25 @@ services:
         condition: service_started
       ollama:
         condition: service_started
+      reranker:
+        condition: service_started
+    volumes:
+      - embedding_model_cache:/root/.cache/huggingface
+    restart: always
+
+  reranker:
+    build: services/reranker
+    container_name: haltefest-reranker
+    ports:
+      - "8090:8090"
+    environment:
+      - RERANKER_MODEL_NAME=${RERANKER_MODEL_NAME:-BAAI/bge-reranker-v2-m3}
+      - RERANKER_DEVICE=${RERANKER_DEVICE:-cpu}
+      - RERANKER_BATCH_SIZE=${RERANKER_BATCH_SIZE:-16}
+      - RERANKER_MAX_CANDIDATES=${RERANKER_MAX_CANDIDATES:-200}
+      - RERANKER_DEFAULT_TOP_K=${RERANKER_DEFAULT_TOP_K:-40}
+    volumes:
+      - embedding_model_cache:/root/.cache/huggingface
     restart: always
 
   postgres:
@@ -192,6 +241,8 @@ services:
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic text-to-index --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analysis-requested --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic analysis-dlq --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic chat-requested --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic chat-dlq --partitions 1 --replication-factor 1
         echo 'Topics created:'
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
     restart: "no"
@@ -289,6 +340,8 @@ services:
       indexer:
         condition: service_started
       llm-analysis:
+        condition: service_started
+      reranker:
         condition: service_started
       qdrant:
         condition: service_started

@@ -6,12 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service"
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/view/home"
+	"github.com/Cyr1ll/golang-templ-htmx-app/internal/view/layout"
+	"github.com/a-h/templ"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -176,6 +179,25 @@ func (h *AuthHandler) handleProfile(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	return home.Profile(user, files, fileData).Render(r.Context(), w) // Теперь передаём *service.User
+}
+
+func (h *AuthHandler) handlePreferences(w http.ResponseWriter, r *http.Request) error {
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return nil
+	}
+
+	return layout.Base(layout.BaseProps{
+		Title: "Preferences",
+		User:  user,
+	}).Render(
+		templ.WithChildren(r.Context(), templ.ComponentFunc(func(_ context.Context, writer io.Writer) error {
+			_, err := io.WriteString(writer, `<main><div id="preferences-page-root" class="w-full"></div></main>`)
+			return err
+		})),
+		w,
+	)
 }
 
 func (h *AuthHandler) handleProfileFilesData(w http.ResponseWriter, r *http.Request) error {

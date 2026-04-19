@@ -1,10 +1,14 @@
 import asyncio
+import base64
+import math
 import json
 import logging
 import os
 import re
 import signal
 import time
+import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -12,11 +16,14 @@ import aiohttp
 import asyncpg
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.errors import KafkaConnectionError
+from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 TOPIC_IN = os.getenv("KAFKA_ANALYSIS_REQUESTED_TOPIC", "analysis-requested")
 TOPIC_DLQ = os.getenv("KAFKA_ANALYSIS_DLQ_TOPIC", "analysis-dlq")
+TOPIC_CHAT_IN = os.getenv("KAFKA_CHAT_REQUESTED_TOPIC", "chat-requested")
+TOPIC_CHAT_DLQ = os.getenv("KAFKA_CHAT_DLQ_TOPIC", "chat-dlq")
 KAFKA_BROKER = os.getenv("KAFKA_BROKERS", os.getenv("KAFKA_BROKER", "kafka:9092"))
 POSTGRES_URL = os.getenv(
     "DB_CONN_STR",
@@ -32,6 +39,7 @@ MODEL_WAIT_MAX_SECONDS = int(os.getenv("MODEL_WAIT_MAX_SECONDS", "0"))
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 LLM_MODEL_FALLBACKS = [
     model.strip()
     for model in os.getenv("LLM_MODEL_FALLBACKS", "qwen2.5:1.5b").split(",")
@@ -40,6 +48,16 @@ LLM_MODEL_FALLBACKS = [
 LLM_USE_FIRST_AVAILABLE = os.getenv("LLM_USE_FIRST_AVAILABLE", "true").strip().lower() in {"1", "true", "yes"}
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 COLLECTION_NAME = "file_chunks"
+GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
+GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1")
+GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat")
+GIGACHAT_TIMEOUT_SECONDS = int(os.getenv("GIGACHAT_TIMEOUT_SECONDS", str(LLM_TIMEOUT_SECONDS)))
+GIGACHAT_VERIFY_SSL = os.getenv("GIGACHAT_VERIFY_SSL", "false").strip().lower() in {"1", "true", "yes"}
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY", "").strip()
+GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID", "").strip()
+GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET", "").strip()
+GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS = int(os.getenv("GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS", "60"))
 
 SCHEMA_VERSION = "1.0"
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", LLM_MODEL)
@@ -53,12 +71,43 @@ SUMMARY_WINDOW_CHARS = 3000
 FLASHCARD_RETRIEVE_TOP_K = 20
 FLASHCARD_MAX_CARDS = 10
 
+DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS = int(os.getenv("DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS", "32000"))
+DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS = int(os.getenv("DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS", "0"))
+DOC_CHAT_RESERVED_SYSTEM_TOKENS = int(os.getenv("DOC_CHAT_RESERVED_SYSTEM_TOKENS", "400"))
+DOC_CHAT_RESERVED_HISTORY_TOKENS = int(os.getenv("DOC_CHAT_RESERVED_HISTORY_TOKENS", "0"))
+DOC_CHAT_RESERVED_OUTPUT_TOKENS = int(os.getenv("DOC_CHAT_RESERVED_OUTPUT_TOKENS", "700"))
+DOC_CHAT_SAFETY_MARGIN_TOKENS = int(os.getenv("DOC_CHAT_SAFETY_MARGIN_TOKENS", "300"))
+DOC_CHAT_RAG_PER_FILE_LIMIT = int(os.getenv("DOC_CHAT_RAG_PER_FILE_LIMIT", "10"))
+DOC_CHAT_RAG_TOTAL_LIMIT = int(os.getenv("DOC_CHAT_RAG_TOTAL_LIMIT", "40"))
+DOC_CHAT_CONTEXT_MAX_CHARS = int(os.getenv("DOC_CHAT_CONTEXT_MAX_CHARS", "18000"))
+DOC_CHAT_EMBEDDING_MODEL = os.getenv("DOC_CHAT_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+DOC_CHAT_SEMANTIC_TOP_K = int(os.getenv("DOC_CHAT_SEMANTIC_TOP_K", "10"))
+DOC_CHAT_BM25_TOP_K = int(os.getenv("DOC_CHAT_BM25_TOP_K", "10"))
+DOC_CHAT_RRF_K = int(os.getenv("DOC_CHAT_RRF_K", "60"))
+DOC_CHAT_HYBRID_FUSED_LIMIT = int(os.getenv("DOC_CHAT_HYBRID_FUSED_LIMIT", "40"))
+DOC_CHAT_BM25_PAGE_SIZE = int(os.getenv("DOC_CHAT_BM25_PAGE_SIZE", "256"))
+DOC_CHAT_BM25_MAX_CHUNKS = int(os.getenv("DOC_CHAT_BM25_MAX_CHUNKS", "3000"))
+DOC_CHAT_RERANK_TOP_K = int(os.getenv("DOC_CHAT_RERANK_TOP_K", "20"))
+RERANKER_URL = os.getenv("RERANKER_URL", "http://reranker:8090")
+RERANKER_TIMEOUT_SECONDS = int(os.getenv("RERANKER_TIMEOUT_SECONDS", "60"))
+
+ROUTING_MODE_FULL_CONTEXT = "FULL_CONTEXT"
+ROUTING_MODE_RAG = "RAG"
+ROUTING_MODE_AUTO = "AUTO"
+SCOPE_SINGLE_DOC = "single-doc"
+SCOPE_MULTI_DOC = "multi-doc"
+SCOPE_ALL_DOCS = "all-docs"
+BM25_TOKEN_PATTERN = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+", flags=re.UNICODE)
+
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("LLMAnalysisService")
 ACTIVE_LLM_MODEL = LLM_MODEL
+GIGACHAT_ACCESS_TOKEN = ""
+GIGACHAT_ACCESS_TOKEN_EXPIRES_AT = 0
+DOC_CHAT_EMBEDDER: TextEmbedding | None = None
 
 
 class TerminalError(Exception):
@@ -177,6 +226,7 @@ class AnalysisEvent:
     file_id: int
     user_id: int
     analysis_type: str
+    provider: str
     requested_at: str
 
     def to_dict(self) -> dict:
@@ -186,6 +236,33 @@ class AnalysisEvent:
             "file_id": self.file_id,
             "user_id": self.user_id,
             "analysis_type": self.analysis_type,
+            "provider": self.provider,
+            "requested_at": self.requested_at,
+        }
+
+
+@dataclass
+class ChatEvent:
+    event_id: str
+    job_id: int
+    chat_id: int
+    question_message_id: int
+    user_id: int
+    provider: str
+    scope_mode: str
+    selected_file_ids: list[int]
+    requested_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "event_id": self.event_id,
+            "job_id": self.job_id,
+            "chat_id": self.chat_id,
+            "question_message_id": self.question_message_id,
+            "user_id": self.user_id,
+            "provider": self.provider,
+            "scope_mode": self.scope_mode,
+            "selected_file_ids": self.selected_file_ids,
             "requested_at": self.requested_at,
         }
 
@@ -195,12 +272,61 @@ def parse_event(raw_value: bytes) -> AnalysisEvent:
     analysis_type = str(payload["analysis_type"]).strip().lower()
     if analysis_type not in {"summary", "chapters", "flashcards"}:
         raise ValueError("invalid analysis_type")
+    provider = str(payload.get("provider", "local")).strip().lower()
+    if provider not in {"local", "gigachat"}:
+        raise ValueError("invalid provider")
     return AnalysisEvent(
         event_id=str(payload["event_id"]),
         job_id=int(payload["job_id"]),
         file_id=int(payload["file_id"]),
         user_id=int(payload["user_id"]),
         analysis_type=analysis_type,
+        provider=provider,
+        requested_at=str(payload["requested_at"]),
+    )
+
+
+def parse_chat_event(raw_value: bytes) -> ChatEvent:
+    payload = json.loads(raw_value.decode("utf-8"))
+    provider = str(payload["provider"]).strip().lower()
+    if provider not in {"local", "gigachat"}:
+        raise ValueError("invalid provider")
+
+    scope_mode = str(payload["scope_mode"]).strip().lower()
+    if scope_mode not in {SCOPE_SINGLE_DOC, SCOPE_MULTI_DOC, SCOPE_ALL_DOCS}:
+        raise ValueError("invalid scope_mode")
+
+    selected_raw = payload.get("selected_file_ids", [])
+    if not isinstance(selected_raw, list):
+        raise ValueError("selected_file_ids must be an array")
+
+    selected_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for value in selected_raw:
+        file_id = int(value)
+        if file_id <= 0:
+            continue
+        if file_id in seen_ids:
+            continue
+        seen_ids.add(file_id)
+        selected_ids.append(file_id)
+
+    if scope_mode == SCOPE_SINGLE_DOC and len(selected_ids) != 1:
+        raise ValueError("single-doc scope requires exactly one selected file")
+    if scope_mode == SCOPE_MULTI_DOC and len(selected_ids) < 2:
+        raise ValueError("multi-doc scope requires at least two selected files")
+    if scope_mode == SCOPE_ALL_DOCS and len(selected_ids) != 0:
+        raise ValueError("all-docs scope does not accept selected_file_ids")
+
+    return ChatEvent(
+        event_id=str(payload["event_id"]),
+        job_id=int(payload["job_id"]),
+        chat_id=int(payload["chat_id"]),
+        question_message_id=int(payload["question_message_id"]),
+        user_id=int(payload["user_id"]),
+        provider=provider,
+        scope_mode=scope_mode,
+        selected_file_ids=selected_ids,
         requested_at=str(payload["requested_at"]),
     )
 
@@ -396,6 +522,7 @@ async def call_ollama(session: aiohttp.ClientSession, prompt: str, timeout: int 
         "options": {
             "temperature": 0.3,
             "num_predict": 2048,
+            "num_ctx": OLLAMA_NUM_CTX,
         },
     }
     async with session.post(
@@ -421,7 +548,200 @@ async def call_ollama(session: aiohttp.ClientSession, prompt: str, timeout: int 
         return data.get("response", "").strip()
 
 
-async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[str, list[int]]:
+def resolve_gigachat_basic_key() -> str:
+    if GIGACHAT_AUTH_KEY:
+        key = GIGACHAT_AUTH_KEY.strip()
+        if key.lower().startswith("basic "):
+            return key[6:].strip()
+        return key
+
+    if GIGACHAT_CLIENT_ID and GIGACHAT_CLIENT_SECRET:
+        pair = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}".encode("utf-8")
+        return base64.b64encode(pair).decode("ascii")
+
+    raise TerminalError(
+        "gigachat credentials are not configured; set GIGACHAT_AUTH_KEY or GIGACHAT_CLIENT_ID+GIGACHAT_CLIENT_SECRET"
+    )
+
+
+def gigachat_credentials_configured() -> bool:
+    if GIGACHAT_AUTH_KEY:
+        return True
+    return bool(GIGACHAT_CLIENT_ID and GIGACHAT_CLIENT_SECRET)
+
+
+def get_gigachat_ssl_option() -> bool:
+    return GIGACHAT_VERIFY_SSL
+
+
+def invalidate_gigachat_token() -> None:
+    global GIGACHAT_ACCESS_TOKEN, GIGACHAT_ACCESS_TOKEN_EXPIRES_AT
+    GIGACHAT_ACCESS_TOKEN = ""
+    GIGACHAT_ACCESS_TOKEN_EXPIRES_AT = 0
+
+
+def has_valid_gigachat_token() -> bool:
+    if not GIGACHAT_ACCESS_TOKEN:
+        return False
+    now_ts = int(time.time())
+    return now_ts + GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS < int(GIGACHAT_ACCESS_TOKEN_EXPIRES_AT)
+
+
+def parse_gigachat_expiry(value: object) -> int:
+    now_ts = int(time.time())
+    try:
+        expires = int(value)  # unix epoch seconds
+    except (TypeError, ValueError):
+        expires = now_ts + (30 * 60)
+
+    if expires <= now_ts:
+        return now_ts + (25 * 60)
+    return expires
+
+
+async def request_gigachat_token(session: aiohttp.ClientSession) -> tuple[str, int]:
+    basic_key = resolve_gigachat_basic_key()
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "RqUID": str(uuid.uuid4()),
+        "Authorization": f"Basic {basic_key}",
+    }
+    data = {"scope": GIGACHAT_SCOPE}
+
+    async with session.post(
+        GIGACHAT_AUTH_URL,
+        headers=headers,
+        data=data,
+        timeout=aiohttp.ClientTimeout(total=GIGACHAT_TIMEOUT_SECONDS),
+        ssl=get_gigachat_ssl_option(),
+    ) as resp:
+        body = await resp.text()
+        if resp.status in {401, 403}:
+            raise TerminalError(f"gigachat auth failed: status={resp.status}, body={body[:300]}")
+        if resp.status != 200:
+            raise RuntimeError(f"gigachat oauth error: status={resp.status}, body={body[:300]}")
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as err:
+            raise RuntimeError(f"gigachat oauth returned invalid json: {err}") from err
+
+    access_token = str(payload.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("gigachat oauth response does not contain access_token")
+    expires_at = parse_gigachat_expiry(payload.get("expires_at"))
+    return access_token, expires_at
+
+
+async def get_gigachat_token(session: aiohttp.ClientSession) -> str:
+    global GIGACHAT_ACCESS_TOKEN, GIGACHAT_ACCESS_TOKEN_EXPIRES_AT
+    if has_valid_gigachat_token():
+        return GIGACHAT_ACCESS_TOKEN
+
+    token, expires_at = await request_gigachat_token(session)
+    GIGACHAT_ACCESS_TOKEN = token
+    GIGACHAT_ACCESS_TOKEN_EXPIRES_AT = expires_at
+    return token
+
+
+def extract_gigachat_content(payload: dict) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) == 0:
+        return ""
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_text = item.get("text")
+            if isinstance(item_text, str) and item_text.strip():
+                parts.append(item_text.strip())
+        return "\n".join(parts).strip()
+    return ""
+
+
+async def call_gigachat(session: aiohttp.ClientSession, prompt: str, timeout: int | None = None) -> str:
+    effective_timeout = timeout or GIGACHAT_TIMEOUT_SECONDS
+    url = f"{GIGACHAT_API_URL.rstrip('/')}/chat/completions"
+
+    async def do_request(access_token: str) -> tuple[int, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        }
+        payload = {
+            "model": GIGACHAT_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "temperature": 0.3,
+            "stream": False,
+        }
+        async with session.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=effective_timeout),
+            ssl=get_gigachat_ssl_option(),
+        ) as resp:
+            return resp.status, await resp.text()
+
+    token = await get_gigachat_token(session)
+    status, body = await do_request(token)
+    if status == 401:
+        invalidate_gigachat_token()
+        token = await get_gigachat_token(session)
+        status, body = await do_request(token)
+
+    if status in {401, 403}:
+        raise TerminalError(f"gigachat request unauthorized: status={status}, body={body[:300]}")
+    if status in {400, 404, 422}:
+        raise TerminalError(f"gigachat request rejected: status={status}, body={body[:300]}")
+    if status != 200:
+        raise RuntimeError(f"gigachat api error: status={status}, body={body[:300]}")
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as err:
+        raise RuntimeError(f"gigachat returned invalid json: {err}") from err
+
+    content = extract_gigachat_content(payload)
+    if not content:
+        raise RuntimeError("gigachat returned empty response content")
+    return content
+
+
+async def call_provider_llm(
+    session: aiohttp.ClientSession,
+    provider: str,
+    prompt: str,
+    timeout: int | None = None,
+) -> str:
+    if provider == "local":
+        return await call_ollama(session, prompt, timeout=timeout)
+    if provider == "gigachat":
+        effective_timeout = timeout if timeout is not None else GIGACHAT_TIMEOUT_SECONDS
+        return await call_gigachat(session, prompt, timeout=effective_timeout)
+    raise TerminalError(f"unsupported provider '{provider}'")
+
+
+async def generate_summary(session: aiohttp.ClientSession, text: str, provider: str) -> tuple[str, list[int]]:
     windows = split_into_windows(text, SUMMARY_WINDOW_CHARS)
 
     if len(windows) == 1:
@@ -430,7 +750,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
             "Ответ должен быть на том же языке, что и текст. Пиши связным текстом, без списков и маркеров.\n\n"
             f"Текст:\n{text[:8000]}"
         )
-        result = await call_ollama(session, prompt)
+        result = await call_provider_llm(session, provider, prompt)
         return result, [1]
 
     window_summaries: list[str] = []
@@ -440,7 +760,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
             "Пиши связным текстом, без списков. Ответ на том же языке, что и текст.\n\n"
             f"Часть {i+1}/{len(windows)}:\n{window}"
         )
-        partial = await call_ollama(session, prompt, timeout=60)
+        partial = await call_provider_llm(session, provider, prompt, timeout=60)
         window_summaries.append(partial)
 
     combined = "\n\n".join(window_summaries)
@@ -450,7 +770,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
         "Пиши связным текстом, без списков. Ответ на том же языке, что и текст.\n\n"
         f"Части:\n{combined[:8000]}"
     )
-    result = await call_ollama(session, final_prompt)
+    result = await call_provider_llm(session, provider, final_prompt)
     return result, list(range(1, len(windows) + 1))
 
 
@@ -484,7 +804,7 @@ def segment_by_headings(text: str) -> list[tuple[str, str]]:
     return segments[:10]
 
 
-async def generate_chapters(session: aiohttp.ClientSession, text: str) -> tuple[str, list[int]]:
+async def generate_chapters(session: aiohttp.ClientSession, text: str, provider: str) -> tuple[str, list[int]]:
     segments = segment_by_headings(text)
     if not segments:
         return "Не удалось выделить главы: документ пуст.", []
@@ -501,7 +821,7 @@ async def generate_chapters(session: aiohttp.ClientSession, text: str) -> tuple[
             "Ответ на том же языке, что и текст. Без списков и маркеров.\n\n"
             f"Заголовок: {title}\n\nТекст раздела:\n{body}"
         )
-        summary = await call_ollama(session, prompt, timeout=60)
+        summary = await call_provider_llm(session, provider, prompt, timeout=60)
         lines.append(f"Глава {idx}: {title}\n{summary}")
         source_ids.append(idx)
 
@@ -534,6 +854,431 @@ def retrieve_chunks(qdrant: QdrantClient, user_id: int, file_id: int) -> list[di
     return chunks
 
 
+def get_doc_chat_embedder() -> TextEmbedding:
+    global DOC_CHAT_EMBEDDER
+    if DOC_CHAT_EMBEDDER is None:
+        logger.info("loading doc-chat embedding model", extra={"embedding_model": DOC_CHAT_EMBEDDING_MODEL})
+        DOC_CHAT_EMBEDDER = TextEmbedding(model_name=DOC_CHAT_EMBEDDING_MODEL)
+    return DOC_CHAT_EMBEDDER
+
+
+def embed_query_text(query: str) -> list[float]:
+    normalized_query = normalize_whitespace(query)
+    if not normalized_query:
+        raise TerminalError("question is empty after normalization")
+
+    embedder = get_doc_chat_embedder()
+    vectors = list(embedder.embed([normalized_query]))
+    if not vectors:
+        raise RuntimeError("embedding model returned no vectors")
+    return [float(value) for value in vectors[0]]
+
+
+def parse_chunk_payload(payload: dict, fallback_file_id: int, fallback_text_version: int) -> dict | None:
+    chunk_text = str(payload.get("chunk_text", "")).strip()
+    if not chunk_text:
+        return None
+
+    file_id = int(payload.get("file_id", fallback_file_id) or fallback_file_id)
+    chunk_id = int(payload.get("chunk_id", 0) or 0)
+    text_version = int(payload.get("text_version", fallback_text_version) or fallback_text_version)
+    candidate_id = f"{file_id}:{text_version}:{chunk_id}"
+    return {
+        "candidate_id": candidate_id,
+        "file_id": file_id,
+        "chunk_id": chunk_id,
+        "text_version": text_version,
+        "chunk_text": chunk_text,
+    }
+
+
+def build_qdrant_filter(user_id: int, file_id: int, text_version: int) -> Filter:
+    must_conditions = [
+        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        FieldCondition(key="file_id", match=MatchValue(value=file_id)),
+    ]
+    if text_version > 0:
+        must_conditions.append(FieldCondition(key="text_version", match=MatchValue(value=text_version)))
+    return Filter(must=must_conditions)
+
+
+def qdrant_search_points(
+    qdrant: QdrantClient,
+    query_vector: list[float],
+    query_filter: Filter,
+    limit: int,
+) -> list[object]:
+    """Compatibility wrapper for qdrant-client versions with/without `.search()`."""
+    if limit <= 0:
+        return []
+
+    # qdrant-client <= 1.13
+    search_method = getattr(qdrant, "search", None)
+    if callable(search_method):
+        return search_method(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+
+    # qdrant-client >= 1.14
+    query_points_method = getattr(qdrant, "query_points", None)
+    if not callable(query_points_method):
+        raise RuntimeError("Qdrant client does not support search/query_points API")
+
+    try:
+        response = query_points_method(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+    except TypeError:
+        # Some versions use `query_filter`, others may use `filter`.
+        response = query_points_method(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+
+    points = getattr(response, "points", None)
+    if isinstance(points, list):
+        return points
+    if isinstance(response, list):
+        return response
+    return []
+
+
+def semantic_retrieve_chat_chunks(
+    qdrant: QdrantClient,
+    user_id: int,
+    file_ids: list[int],
+    text_versions: dict[int, int],
+    query_vector: list[float],
+    top_k: int,
+) -> list[dict]:
+    if not file_ids or top_k <= 0:
+        return []
+
+    candidates: list[dict] = []
+    per_file_limit = max(1, top_k)
+
+    for file_id in file_ids:
+        text_version = int(text_versions.get(file_id, 0))
+        query_filter = build_qdrant_filter(user_id, file_id, text_version)
+        results = qdrant_search_points(
+            qdrant=qdrant,
+            query_vector=query_vector,
+            query_filter=query_filter,
+            limit=per_file_limit,
+        )
+        for point in results:
+            payload = point.payload or {}
+            parsed = parse_chunk_payload(payload, file_id, text_version)
+            if parsed is None:
+                continue
+            parsed["semantic_score"] = float(getattr(point, "score", 0.0) or 0.0)
+            candidates.append(parsed)
+
+    deduped: dict[str, dict] = {}
+    for candidate in candidates:
+        candidate_id = str(candidate["candidate_id"])
+        prev = deduped.get(candidate_id)
+        if prev is None or float(candidate.get("semantic_score", 0.0)) > float(prev.get("semantic_score", 0.0)):
+            deduped[candidate_id] = candidate
+
+    ranked = sorted(deduped.values(), key=lambda item: float(item.get("semantic_score", 0.0)), reverse=True)
+    return ranked[:top_k]
+
+
+def tokenize_for_bm25(text: str) -> list[str]:
+    if not text:
+        return []
+    return [token.lower() for token in BM25_TOKEN_PATTERN.findall(text)]
+
+
+def compute_bm25_scores(corpus_tokens: list[list[str]], query_tokens: list[str]) -> list[float]:
+    if not corpus_tokens or not query_tokens:
+        return [0.0 for _ in corpus_tokens]
+
+    doc_count = len(corpus_tokens)
+    doc_lengths = [len(tokens) for tokens in corpus_tokens]
+    avg_len = sum(doc_lengths) / doc_count if doc_count > 0 else 1.0
+
+    document_frequency: Counter[str] = Counter()
+    for tokens in corpus_tokens:
+        for token in set(tokens):
+            document_frequency[token] += 1
+
+    k1 = 1.5
+    b = 0.75
+    scores: list[float] = []
+
+    for tokens, doc_len in zip(corpus_tokens, doc_lengths):
+        term_freq = Counter(tokens)
+        score = 0.0
+
+        for token in query_tokens:
+            freq = term_freq.get(token, 0)
+            if freq <= 0:
+                continue
+
+            df = document_frequency.get(token, 0)
+            idf = math.log(1.0 + (doc_count - df + 0.5) / (df + 0.5))
+            norm = k1 * (1.0 - b + b * (doc_len / (avg_len or 1.0)))
+            score += idf * ((freq * (k1 + 1.0)) / (freq + norm))
+
+        scores.append(score)
+
+    return scores
+
+
+def scroll_chunks_for_file(
+    qdrant: QdrantClient,
+    user_id: int,
+    file_id: int,
+    text_version: int,
+    page_size: int,
+    max_chunks: int,
+) -> list[dict]:
+    if max_chunks <= 0:
+        return []
+
+    chunks: list[dict] = []
+    offset = None
+    query_filter = build_qdrant_filter(user_id, file_id, text_version)
+    while len(chunks) < max_chunks:
+        batch_limit = min(max(1, page_size), max_chunks - len(chunks))
+        points, next_offset = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=query_filter,
+            limit=batch_limit,
+            offset=offset,
+            with_payload=True,
+        )
+        if not points:
+            break
+
+        for point in points:
+            payload = point.payload or {}
+            parsed = parse_chunk_payload(payload, file_id, text_version)
+            if parsed is None:
+                continue
+            chunks.append(parsed)
+            if len(chunks) >= max_chunks:
+                break
+
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    return chunks
+
+
+def bm25_retrieve_chat_chunks(
+    qdrant: QdrantClient,
+    user_id: int,
+    file_ids: list[int],
+    text_versions: dict[int, int],
+    question: str,
+    top_k: int,
+    page_size: int,
+    max_chunks: int,
+) -> list[dict]:
+    if not file_ids or top_k <= 0 or max_chunks <= 0:
+        return []
+
+    query_tokens = tokenize_for_bm25(question)
+    if not query_tokens:
+        return []
+
+    corpus: list[dict] = []
+    per_file_limit = max(1, max_chunks // max(1, len(file_ids)))
+    per_file_limit = max(per_file_limit, top_k)
+    remaining = max_chunks
+
+    for file_id in file_ids:
+        if remaining <= 0:
+            break
+        text_version = int(text_versions.get(file_id, 0))
+        file_limit = min(per_file_limit, remaining)
+        chunks = scroll_chunks_for_file(qdrant, user_id, file_id, text_version, page_size, file_limit)
+        corpus.extend(chunks)
+        remaining = max_chunks - len(corpus)
+
+    if not corpus:
+        return []
+
+    deduped: dict[str, dict] = {}
+    for chunk in corpus:
+        deduped[str(chunk["candidate_id"])] = chunk
+    corpus = list(deduped.values())
+
+    corpus_tokens = [tokenize_for_bm25(str(chunk.get("chunk_text", ""))) for chunk in corpus]
+    scores = compute_bm25_scores(corpus_tokens, query_tokens)
+
+    ranked: list[dict] = []
+    for chunk, score in zip(corpus, scores):
+        if score <= 0:
+            continue
+        item = dict(chunk)
+        item["bm25_score"] = float(score)
+        ranked.append(item)
+
+    ranked.sort(key=lambda item: float(item.get("bm25_score", 0.0)), reverse=True)
+    return ranked[:top_k]
+
+
+def fuse_hybrid_results(semantic_chunks: list[dict], bm25_chunks: list[dict], rrf_k: int, fused_limit: int) -> list[dict]:
+    fused: dict[str, dict] = {}
+
+    def apply(source_chunks: list[dict], rank_field: str, score_field: str) -> None:
+        for rank, chunk in enumerate(source_chunks, start=1):
+            candidate_id = str(chunk["candidate_id"])
+            existing = fused.get(candidate_id)
+            if existing is None:
+                existing = dict(chunk)
+                existing["rrf_score"] = 0.0
+                existing["semantic_rank"] = None
+                existing["bm25_rank"] = None
+                fused[candidate_id] = existing
+
+            existing["rrf_score"] = float(existing.get("rrf_score", 0.0)) + (1.0 / float(max(1, rrf_k) + rank))
+            existing[rank_field] = rank
+            if score_field in chunk:
+                existing[score_field] = float(chunk.get(score_field, 0.0) or 0.0)
+
+    apply(semantic_chunks, "semantic_rank", "semantic_score")
+    apply(bm25_chunks, "bm25_rank", "bm25_score")
+
+    ranked = sorted(fused.values(), key=lambda item: float(item.get("rrf_score", 0.0)), reverse=True)
+    return ranked[: max(1, fused_limit)]
+
+
+async def rerank_chunks(
+    session: aiohttp.ClientSession,
+    question: str,
+    chunks: list[dict],
+    top_k: int,
+) -> list[dict]:
+    if not chunks:
+        return []
+
+    effective_top_k = max(1, min(top_k, len(chunks)))
+    payload = {
+        "query": question,
+        "top_k": effective_top_k,
+        "candidates": [
+            {
+                "candidate_id": str(chunk["candidate_id"]),
+                "text": str(chunk["chunk_text"]),
+                "file_id": int(chunk["file_id"]),
+                "chunk_id": int(chunk["chunk_id"]),
+            }
+            for chunk in chunks
+        ],
+    }
+
+    url = f"{RERANKER_URL.rstrip('/')}/rerank"
+    try:
+        async with session.post(
+            url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=RERANKER_TIMEOUT_SECONDS),
+        ) as resp:
+            body = await resp.text()
+            if resp.status != 200:
+                raise RuntimeError(f"reranker returned status={resp.status}, body={body[:300]}")
+            response_payload = json.loads(body)
+    except Exception as err:  # noqa: BLE001
+        logger.warning("reranker unavailable, fallback to RRF result", extra={"error": str(err)})
+        return chunks[:effective_top_k]
+
+    results = response_payload.get("results")
+    if not isinstance(results, list) or not results:
+        return chunks[:effective_top_k]
+
+    source_by_id = {str(chunk["candidate_id"]): chunk for chunk in chunks}
+    reranked: list[dict] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+
+        candidate_id = str(item.get("candidate_id", "")).strip()
+        source = source_by_id.get(candidate_id)
+        if source is None:
+            continue
+
+        updated = dict(source)
+        updated["rerank_score"] = float(item.get("score", 0.0) or 0.0)
+        reranked.append(updated)
+
+    if not reranked:
+        return chunks[:effective_top_k]
+    return reranked[:effective_top_k]
+
+
+async def retrieve_chat_chunks_hybrid(
+    session: aiohttp.ClientSession,
+    qdrant: QdrantClient,
+    user_id: int,
+    file_ids: list[int],
+    text_versions: dict[int, int],
+    question: str,
+) -> list[dict]:
+    query_vector = await asyncio.to_thread(embed_query_text, question)
+    semantic_chunks = await asyncio.to_thread(
+        semantic_retrieve_chat_chunks,
+        qdrant,
+        user_id,
+        file_ids,
+        text_versions,
+        query_vector,
+        DOC_CHAT_SEMANTIC_TOP_K,
+    )
+    bm25_chunks = await asyncio.to_thread(
+        bm25_retrieve_chat_chunks,
+        qdrant,
+        user_id,
+        file_ids,
+        text_versions,
+        question,
+        DOC_CHAT_BM25_TOP_K,
+        DOC_CHAT_BM25_PAGE_SIZE,
+        DOC_CHAT_BM25_MAX_CHUNKS,
+    )
+
+    fused_chunks = fuse_hybrid_results(
+        semantic_chunks=semantic_chunks,
+        bm25_chunks=bm25_chunks,
+        rrf_k=DOC_CHAT_RRF_K,
+        fused_limit=DOC_CHAT_HYBRID_FUSED_LIMIT,
+    )
+    reranked_chunks = await rerank_chunks(
+        session=session,
+        question=question,
+        chunks=fused_chunks,
+        top_k=DOC_CHAT_RERANK_TOP_K,
+    )
+
+    logger.info(
+        "chat retrieval completed",
+        extra={
+            "file_count": len(file_ids),
+            "semantic_count": len(semantic_chunks),
+            "bm25_count": len(bm25_chunks),
+            "fused_count": len(fused_chunks),
+            "reranked_count": len(reranked_chunks),
+        },
+    )
+    return reranked_chunks
+
+
 def diversity_sample(chunks: list[dict], max_cards: int) -> list[dict]:
     if len(chunks) <= max_cards:
         return chunks
@@ -551,6 +1296,7 @@ async def generate_flashcards(
     qdrant: QdrantClient,
     user_id: int,
     file_id: int,
+    provider: str,
 ) -> tuple[str, list[int]]:
     chunks = retrieve_chunks(qdrant, user_id, file_id)
     if not chunks:
@@ -579,7 +1325,7 @@ async def generate_flashcards(
             "внутри question/answer не добавляй префиксы 'Вопрос:'/'Ответ:'.\n\n"
             f"Текст:\n{chunk_text[:1500]}"
         )
-        raw_card = await call_ollama(session, prompt, timeout=45)
+        raw_card = await call_provider_llm(session, provider, prompt, timeout=45)
         parsed = parse_and_normalize_flashcard(raw_card)
         if parsed is None:
             continue
@@ -613,6 +1359,7 @@ async def generate_flashcards(
 
 async def run_analysis(
     analysis_type: str,
+    provider: str,
     session: aiohttp.ClientSession,
     text: str,
     qdrant: QdrantClient,
@@ -620,11 +1367,11 @@ async def run_analysis(
     file_id: int,
 ) -> tuple[str, list[int]]:
     if analysis_type == "summary":
-        return await generate_summary(session, text)
+        return await generate_summary(session, text, provider)
     if analysis_type == "chapters":
-        return await generate_chapters(session, text)
+        return await generate_chapters(session, text, provider)
     if analysis_type == "flashcards":
-        return await generate_flashcards(session, qdrant, user_id, file_id)
+        return await generate_flashcards(session, qdrant, user_id, file_id, provider)
     raise TerminalError(f"unsupported analysis type: {analysis_type}")
 
 
@@ -646,7 +1393,7 @@ async def download_text(session: aiohttp.ClientSession, s3_text_path: str) -> st
 async def claim_job_attempt(db: asyncpg.Connection, event: AnalysisEvent) -> tuple[str, int]:
     row = await db.fetchrow(
         """
-        SELECT file_id, user_id, analysis_type, status, attempts
+        SELECT file_id, user_id, analysis_type, provider, status, attempts
         FROM analysis_jobs
         WHERE id = $1
         FOR UPDATE
@@ -660,6 +1407,8 @@ async def claim_job_attempt(db: asyncpg.Connection, event: AnalysisEvent) -> tup
         raise TerminalError(f"event/job mismatch for job_id={event.job_id}")
     if str(row["analysis_type"]).strip().lower() != event.analysis_type:
         raise TerminalError(f"analysis type mismatch for job_id={event.job_id}")
+    if str(row["provider"] or "").strip().lower() != event.provider:
+        raise TerminalError(f"provider mismatch for analysis job: job_id={event.job_id}")
 
     status = str(row["status"] or "").upper()
     if status == "DONE":
@@ -699,6 +1448,447 @@ async def get_latest_text_path(db: asyncpg.Connection, event: AnalysisEvent) -> 
         raise RuntimeError(f"canonical text is not ready for file_id={event.file_id}")
     return str(row["s3_text_path"])
 
+
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def get_provider_context_window_tokens(provider: str) -> int:
+    if provider == "local":
+        return max(1024, OLLAMA_NUM_CTX)
+    return max(1024, DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS)
+
+
+def compute_available_context_tokens(provider: str) -> int:
+    window_tokens = get_provider_context_window_tokens(provider)
+    available = (
+        window_tokens
+        - DOC_CHAT_RESERVED_SYSTEM_TOKENS
+        - DOC_CHAT_RESERVED_HISTORY_TOKENS
+        - DOC_CHAT_RESERVED_OUTPUT_TOKENS
+        - DOC_CHAT_SAFETY_MARGIN_TOKENS
+    )
+    return max(0, available)
+
+
+def compute_single_doc_threshold_tokens(provider: str) -> int:
+    if DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS > 0:
+        return DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS
+    return compute_available_context_tokens(provider)
+
+
+async def ensure_user_owns_files(db: asyncpg.Connection, user_id: int, file_ids: list[int]) -> None:
+    if not file_ids:
+        return
+
+    owned = await db.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM files
+        WHERE user_id = $1
+          AND id = ANY($2::int[])
+        """,
+        user_id,
+        file_ids,
+    )
+    if int(owned or 0) != len(file_ids):
+        raise TerminalError("one or more selected files are not accessible")
+
+
+async def resolve_chat_scope_file_ids(db: asyncpg.Connection, event: ChatEvent) -> list[int]:
+    if event.scope_mode == SCOPE_ALL_DOCS:
+        rows = await db.fetch(
+            """
+            SELECT DISTINCT file_id
+            FROM text_artifacts
+            WHERE user_id = $1
+              AND index_status = 'DONE'
+            ORDER BY file_id
+            """,
+            event.user_id,
+        )
+        file_ids = [int(row["file_id"]) for row in rows]
+        if not file_ids:
+            raise RuntimeError("no indexed documents found for all-docs scope")
+        return file_ids
+
+    file_ids = sorted(set(int(file_id) for file_id in event.selected_file_ids if int(file_id) > 0))
+    if event.scope_mode == SCOPE_SINGLE_DOC and len(file_ids) != 1:
+        raise TerminalError("single-doc scope requires exactly one file")
+    if event.scope_mode == SCOPE_MULTI_DOC and len(file_ids) < 2:
+        raise TerminalError("multi-doc scope requires at least two files")
+    if not file_ids:
+        raise TerminalError("selected file list is empty")
+
+    await ensure_user_owns_files(db, event.user_id, file_ids)
+    return file_ids
+
+
+async def get_latest_indexed_text_versions(
+    db: asyncpg.Connection,
+    user_id: int,
+    file_ids: list[int],
+) -> dict[int, int]:
+    if not file_ids:
+        return {}
+
+    rows = await db.fetch(
+        """
+        SELECT DISTINCT ON (file_id) file_id, text_version
+        FROM text_artifacts
+        WHERE user_id = $1
+          AND file_id = ANY($2::int[])
+          AND index_status = 'DONE'
+        ORDER BY file_id, text_version DESC
+        """,
+        user_id,
+        file_ids,
+    )
+    versions = {int(row["file_id"]): int(row["text_version"]) for row in rows}
+
+    missing = [file_id for file_id in file_ids if file_id not in versions]
+    if missing:
+        raise RuntimeError(f"indexed chunks are not ready for files: {missing}")
+    return versions
+
+
+async def get_latest_text_path_for_file(db: asyncpg.Connection, user_id: int, file_id: int) -> str:
+    row = await db.fetchrow(
+        """
+        SELECT s3_text_path
+        FROM text_artifacts
+        WHERE file_id = $1
+          AND user_id = $2
+        ORDER BY text_version DESC
+        LIMIT 1
+        """,
+        file_id,
+        user_id,
+    )
+    if row is None:
+        raise RuntimeError(f"canonical text is not ready for file_id={file_id}")
+    return str(row["s3_text_path"])
+
+
+async def get_question_content(db: asyncpg.Connection, event: ChatEvent) -> str:
+    row = await db.fetchrow(
+        """
+        SELECT content
+        FROM chat_messages
+        WHERE id = $1
+          AND chat_id = $2
+          AND user_id = $3
+          AND role = 'user'
+        """,
+        event.question_message_id,
+        event.chat_id,
+        event.user_id,
+    )
+    if row is None:
+        raise TerminalError(f"question message not found: message_id={event.question_message_id}")
+    content = str(row["content"] or "").strip()
+    if not content:
+        raise TerminalError("question message is empty")
+    return content
+
+
+async def claim_chat_job_attempt(db: asyncpg.Connection, event: ChatEvent) -> tuple[str, int]:
+    row = await db.fetchrow(
+        """
+        SELECT
+            user_id,
+            chat_id,
+            question_message_id,
+            provider,
+            scope_mode,
+            status,
+            attempts
+        FROM chat_jobs
+        WHERE id = $1
+        FOR UPDATE
+        """,
+        event.job_id,
+    )
+    if row is None:
+        raise TerminalError(f"chat job not found: job_id={event.job_id}")
+
+    if int(row["user_id"]) != event.user_id:
+        raise TerminalError(f"user mismatch for chat job: job_id={event.job_id}")
+    if int(row["chat_id"]) != event.chat_id:
+        raise TerminalError(f"chat mismatch for chat job: job_id={event.job_id}")
+    if int(row["question_message_id"]) != event.question_message_id:
+        raise TerminalError(f"question message mismatch for chat job: job_id={event.job_id}")
+
+    db_provider = str(row["provider"] or "").strip().lower()
+    if db_provider != event.provider:
+        raise TerminalError(f"provider mismatch for chat job: job_id={event.job_id}")
+    db_scope_mode = str(row["scope_mode"] or "").strip().lower()
+    if db_scope_mode != event.scope_mode:
+        raise TerminalError(f"scope mismatch for chat job: job_id={event.job_id}")
+
+    status = str(row["status"] or "").upper()
+    if status == "DONE":
+        return "DONE", int(row["attempts"] or 0)
+    if status == "FAILED":
+        return "FAILED", int(row["attempts"] or 0)
+
+    next_attempt = int(row["attempts"] or 0) + 1
+    await db.execute(
+        """
+        UPDATE chat_jobs
+        SET status = 'PROCESSING',
+            attempts = $2,
+            started_at = COALESCE(started_at, NOW()),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        event.job_id,
+        next_attempt,
+    )
+    return "PROCESSING", next_attempt
+
+
+async def persist_chat_success(
+    db: asyncpg.Connection,
+    event: ChatEvent,
+    assistant_text: str,
+    routing_mode: str,
+    threshold_tokens: int | None,
+) -> None:
+    async with db.transaction():
+        assistant_message_id = await db.fetchval(
+            """
+            INSERT INTO chat_messages (chat_id, user_id, role, content, metadata_json, created_at)
+            VALUES ($1, $2, 'assistant', $3, '{}'::jsonb, NOW())
+            RETURNING id
+            """,
+            event.chat_id,
+            event.user_id,
+            assistant_text,
+        )
+
+        await db.execute(
+            """
+            UPDATE chat_jobs
+            SET status = 'DONE',
+                assistant_message_id = $2,
+                routing_mode = $3,
+                threshold_tokens = $4,
+                error = NULL,
+                finished_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            event.job_id,
+            assistant_message_id,
+            routing_mode,
+            threshold_tokens,
+        )
+
+        await db.execute(
+            """
+            UPDATE chat_threads
+            SET updated_at = NOW()
+            WHERE id = $1
+            """,
+            event.chat_id,
+        )
+
+
+async def persist_chat_failed(
+    db: asyncpg.Connection,
+    event: ChatEvent,
+    error_message: str,
+    routing_mode: str,
+    threshold_tokens: int | None,
+) -> None:
+    await db.execute(
+        """
+        UPDATE chat_jobs
+        SET status = 'FAILED',
+            routing_mode = $3,
+            threshold_tokens = $4,
+            error = $2,
+            finished_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        event.job_id,
+        error_message,
+        routing_mode,
+        threshold_tokens,
+    )
+
+
+async def persist_chat_queued_for_retry(
+    db: asyncpg.Connection,
+    event: ChatEvent,
+    error_message: str,
+    routing_mode: str,
+    threshold_tokens: int | None,
+) -> None:
+    await db.execute(
+        """
+        UPDATE chat_jobs
+        SET status = 'QUEUED',
+            routing_mode = $3,
+            threshold_tokens = $4,
+            error = $2,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        event.job_id,
+        error_message,
+        routing_mode,
+        threshold_tokens,
+    )
+
+
+async def publish_chat_dlq(
+    producer: AIOKafkaProducer,
+    event: ChatEvent,
+    error_code: str,
+    error_message: str,
+    attempt: int,
+) -> None:
+    payload = {
+        "event_id": event.event_id,
+        "source_topic": TOPIC_CHAT_IN,
+        "source_payload": event.to_dict(),
+        "error_code": error_code,
+        "error_message": error_message,
+        "attempt": attempt,
+        "failed_at": now_rfc3339(),
+    }
+    await producer.send_and_wait(TOPIC_CHAT_DLQ, json.dumps(payload).encode("utf-8"))
+
+
+def build_rag_context_text(chunks: list[dict], max_chars: int) -> str:
+    if not chunks:
+        return ""
+
+    parts: list[str] = []
+    current_len = 0
+    for chunk in chunks:
+        prefix = f"[file:{chunk['file_id']} chunk:{chunk['chunk_id']}]\n"
+        body = str(chunk["chunk_text"]).strip()
+        if not body:
+            continue
+        block = f"{prefix}{body}\n"
+        if current_len + len(block) > max_chars:
+            break
+        parts.append(block)
+        current_len += len(block)
+
+    return "\n".join(parts).strip()
+
+
+def build_chat_prompt(question: str, scope_mode: str, routing_mode: str, context_text: str) -> str:
+    if routing_mode == ROUTING_MODE_FULL_CONTEXT:
+        return (
+            "Ты — ассистент по документам. Ответь на вопрос пользователя, опираясь на предоставленный текст документа. "
+            "Если в тексте нет точного ответа, честно скажи об этом. "
+            "Пиши кратко и по делу, на языке вопроса пользователя.\n\n"
+            f"Вопрос:\n{question}\n\n"
+            f"Текст документа:\n{context_text}"
+        )
+
+    return (
+        "Ты — ассистент по документам. Ответь на вопрос пользователя, опираясь только на предоставленные фрагменты. "
+        "Если данных недостаточно, явно напиши, что информации недостаточно. "
+        "Пиши кратко и по делу, на языке вопроса пользователя.\n\n"
+        f"Scope: {scope_mode}\n"
+        f"Вопрос:\n{question}\n\n"
+        f"Контекст (retrieval):\n{context_text}"
+    )
+
+
+def fit_context_to_model_window(
+    question: str,
+    scope_mode: str,
+    routing_mode: str,
+    provider: str,
+    context_text: str,
+) -> tuple[str, str]:
+    context = context_text
+    max_prompt_tokens = max(
+        512,
+        get_provider_context_window_tokens(provider) - DOC_CHAT_RESERVED_OUTPUT_TOKENS - DOC_CHAT_SAFETY_MARGIN_TOKENS,
+    )
+    prompt = build_chat_prompt(question, scope_mode, routing_mode, context)
+    prompt_tokens = estimate_tokens(prompt)
+
+    if prompt_tokens <= max_prompt_tokens:
+        return context, prompt
+
+    while prompt_tokens > max_prompt_tokens and len(context) > 2000:
+        ratio = max_prompt_tokens / max(1, prompt_tokens)
+        target_len = max(2000, int(len(context) * ratio * 0.92))
+        context = context[:target_len]
+        if "\n" in context:
+            context = context.rsplit("\n", 1)[0]
+        prompt = build_chat_prompt(question, scope_mode, routing_mode, context)
+        prompt_tokens = estimate_tokens(prompt)
+
+    if prompt_tokens > max_prompt_tokens and len(context) > 2000:
+        context = context[:2000]
+        prompt = build_chat_prompt(question, scope_mode, routing_mode, context)
+
+    if estimate_tokens(prompt) > max_prompt_tokens:
+        logger.warning(
+            "chat prompt still exceeds estimated model window after context trim",
+            extra={
+                "provider": provider,
+                "routing_mode": routing_mode,
+                "estimated_prompt_tokens": estimate_tokens(prompt),
+                "max_prompt_tokens": max_prompt_tokens,
+            },
+        )
+    elif context != context_text:
+        logger.info(
+            "chat context trimmed to fit model window",
+            extra={
+                "provider": provider,
+                "routing_mode": routing_mode,
+                "original_chars": len(context_text),
+                "trimmed_chars": len(context),
+                "estimated_prompt_tokens": estimate_tokens(prompt),
+                "max_prompt_tokens": max_prompt_tokens,
+            },
+        )
+
+    return context, prompt
+
+
+async def generate_chat_answer(
+    session: aiohttp.ClientSession,
+    question: str,
+    scope_mode: str,
+    routing_mode: str,
+    provider: str,
+    context_text: str,
+) -> str:
+    _, prompt = fit_context_to_model_window(
+        question=question,
+        scope_mode=scope_mode,
+        routing_mode=routing_mode,
+        provider=provider,
+        context_text=context_text,
+    )
+
+    if provider == "local":
+        answer = await call_ollama(session, prompt, timeout=LLM_TIMEOUT_SECONDS)
+    elif provider == "gigachat":
+        answer = await call_gigachat(session, prompt, timeout=GIGACHAT_TIMEOUT_SECONDS)
+    else:
+        raise TerminalError(f"unsupported provider '{provider}'")
+
+    normalized = normalize_text(answer)
+    if not normalized:
+        raise RuntimeError("llm returned empty response")
+    return normalized
 
 async def persist_success(
     db: asyncpg.Connection,
@@ -799,11 +1989,12 @@ async def process_event(
                 raise RuntimeError("canonical text is empty")
 
             result_text, source_chunk_ids = await run_analysis(
-                event.analysis_type, session, text, qdrant, event.user_id, event.file_id
+                event.analysis_type, event.provider, session, text, qdrant, event.user_id, event.file_id
             )
             result_json = {
                 "schema_version": SCHEMA_VERSION,
                 "analysis_type": event.analysis_type,
+                "provider": event.provider,
                 "result_text": result_text,
                 "source_chunk_ids": source_chunk_ids,
             }
@@ -815,6 +2006,7 @@ async def process_event(
                     "event_id": event.event_id,
                     "job_id": event.job_id,
                     "analysis_type": event.analysis_type,
+                    "provider": event.provider,
                     "attempt": attempt,
                 },
             )
@@ -841,6 +2033,7 @@ async def process_event(
                         "event_id": event.event_id,
                         "job_id": event.job_id,
                         "analysis_type": event.analysis_type,
+                        "provider": event.provider,
                         "attempt": current_attempt,
                         "error": safe_error,
                     },
@@ -850,16 +2043,148 @@ async def process_event(
             delay = get_retry_delay(current_attempt)
             await persist_queued_for_retry(db, event, safe_error)
             logger.warning(
-                "analysis retry scheduled",
+                f"analysis retry scheduled: {safe_error}",
                 extra={
                     "event_id": event.event_id,
                     "job_id": event.job_id,
                     "analysis_type": event.analysis_type,
+                    "provider": event.provider,
                     "attempt": current_attempt,
                     "retry_in_sec": delay,
                 },
             )
             await asyncio.sleep(delay)
+
+
+async def process_chat_event(
+    event: ChatEvent,
+    db: asyncpg.Connection,
+    session: aiohttp.ClientSession,
+    producer: AIOKafkaProducer,
+    qdrant: QdrantClient,
+) -> None:
+    for _ in range(MAX_ATTEMPTS):
+        routing_mode = default_chat_routing_mode()
+        threshold_tokens: int | None = None
+        try:
+            async with db.transaction():
+                state, attempt = await claim_chat_job_attempt(db, event)
+            if state == "DONE":
+                logger.info("chat job already completed", extra={"job_id": event.job_id, "event_id": event.event_id})
+                return
+            if state == "FAILED":
+                logger.info("chat job already failed", extra={"job_id": event.job_id, "event_id": event.event_id})
+                return
+
+            question = await get_question_content(db, event)
+            file_ids = await resolve_chat_scope_file_ids(db, event)
+
+            context_text = ""
+            if event.scope_mode == SCOPE_SINGLE_DOC:
+                file_id = file_ids[0]
+                s3_text_path = await get_latest_text_path_for_file(db, event.user_id, file_id)
+                full_text = await asyncio.wait_for(download_text(session, s3_text_path), timeout=LLM_TIMEOUT_SECONDS)
+                doc_tokens = estimate_tokens(full_text)
+                threshold_tokens = compute_single_doc_threshold_tokens(event.provider)
+
+                if doc_tokens <= threshold_tokens:
+                    routing_mode = ROUTING_MODE_FULL_CONTEXT
+                    context_text = full_text
+                else:
+                    routing_mode = ROUTING_MODE_RAG
+            else:
+                routing_mode = ROUTING_MODE_RAG
+
+            if routing_mode == ROUTING_MODE_RAG:
+                text_versions = await get_latest_indexed_text_versions(
+                    db=db,
+                    user_id=event.user_id,
+                    file_ids=file_ids,
+                )
+                chunks = await retrieve_chat_chunks_hybrid(
+                    session=session,
+                    qdrant=qdrant,
+                    user_id=event.user_id,
+                    file_ids=file_ids,
+                    text_versions=text_versions,
+                    question=question,
+                )
+                dynamic_context_max_chars = max(2000, compute_available_context_tokens(event.provider) * 4)
+                effective_context_max_chars = min(DOC_CHAT_CONTEXT_MAX_CHARS, dynamic_context_max_chars)
+                context_text = build_rag_context_text(chunks, effective_context_max_chars)
+                if not context_text:
+                    raise RuntimeError("RAG context is empty (no indexed chunks found)")
+
+            answer = await generate_chat_answer(
+                session=session,
+                question=question,
+                scope_mode=event.scope_mode,
+                routing_mode=routing_mode,
+                provider=event.provider,
+                context_text=context_text,
+            )
+            await persist_chat_success(db, event, answer, routing_mode, threshold_tokens)
+
+            logger.info(
+                "chat job completed",
+                extra={
+                    "event_id": event.event_id,
+                    "job_id": event.job_id,
+                    "chat_id": event.chat_id,
+                    "scope_mode": event.scope_mode,
+                    "routing_mode": routing_mode,
+                    "provider": event.provider,
+                    "attempt": attempt,
+                },
+            )
+            return
+        except TerminalError as err:
+            safe_error = sanitize_error_message(err)
+            await persist_chat_failed(db, event, safe_error, routing_mode, threshold_tokens)
+            await publish_chat_dlq(producer, event, "CHAT_TERMINAL_ERROR", safe_error, MAX_ATTEMPTS)
+            logger.error(
+                "chat terminal failure",
+                extra={"event_id": event.event_id, "job_id": event.job_id, "error": safe_error},
+            )
+            return
+        except Exception as err:  # noqa: BLE001
+            safe_error = sanitize_error_message(err)
+            attempts = await db.fetchval("SELECT attempts FROM chat_jobs WHERE id = $1", event.job_id)
+            current_attempt = int(attempts or 0)
+
+            if current_attempt >= MAX_ATTEMPTS:
+                await persist_chat_failed(db, event, safe_error, routing_mode, threshold_tokens)
+                await publish_chat_dlq(producer, event, "CHAT_MAX_ATTEMPTS", safe_error, current_attempt)
+                logger.error(
+                    "chat failed after retries",
+                    extra={
+                        "event_id": event.event_id,
+                        "job_id": event.job_id,
+                        "chat_id": event.chat_id,
+                        "attempt": current_attempt,
+                        "error": safe_error,
+                    },
+                )
+                return
+
+            delay = get_retry_delay(current_attempt)
+            await persist_chat_queued_for_retry(db, event, safe_error, routing_mode, threshold_tokens)
+            logger.warning(
+                f"chat retry scheduled: {safe_error}",
+                extra={
+                    "event_id": event.event_id,
+                    "job_id": event.job_id,
+                    "chat_id": event.chat_id,
+                    "attempt": current_attempt,
+                    "retry_in_sec": delay,
+                    "error": safe_error,
+                },
+            )
+            await asyncio.sleep(delay)
+
+
+def default_chat_routing_mode() -> str:
+    return ROUTING_MODE_AUTO
 
 
 async def main() -> None:
@@ -889,6 +2214,7 @@ async def main() -> None:
 
         consumer = AIOKafkaConsumer(
             TOPIC_IN,
+            TOPIC_CHAT_IN,
             bootstrap_servers=KAFKA_BROKER,
             group_id=CONSUMER_GROUP_ID,
             enable_auto_commit=False,
@@ -906,12 +2232,33 @@ async def main() -> None:
             extra={
                 "topic_in": TOPIC_IN,
                 "topic_dlq": TOPIC_DLQ,
+                "topic_chat_in": TOPIC_CHAT_IN,
+                "topic_chat_dlq": TOPIC_CHAT_DLQ,
                 "kafka": KAFKA_BROKER,
                 "db": POSTGRES_URL,
                 "seaweed": SEAWEED_URL,
                 "ollama": OLLAMA_URL,
                 "model": get_active_model(),
+                "ollama_num_ctx": OLLAMA_NUM_CTX,
+                "gigachat_api": GIGACHAT_API_URL,
+                "gigachat_model": GIGACHAT_MODEL,
+                "gigachat_verify_ssl": GIGACHAT_VERIFY_SSL,
+                "gigachat_credentials_configured": gigachat_credentials_configured(),
                 "qdrant": QDRANT_URL,
+                "doc_chat_model_context_window_tokens": DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS,
+                "doc_chat_single_doc_threshold_tokens": DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS,
+                "doc_chat_reserved_system_tokens": DOC_CHAT_RESERVED_SYSTEM_TOKENS,
+                "doc_chat_reserved_history_tokens": DOC_CHAT_RESERVED_HISTORY_TOKENS,
+                "doc_chat_reserved_output_tokens": DOC_CHAT_RESERVED_OUTPUT_TOKENS,
+                "doc_chat_safety_margin_tokens": DOC_CHAT_SAFETY_MARGIN_TOKENS,
+                "doc_chat_context_max_chars": DOC_CHAT_CONTEXT_MAX_CHARS,
+                "doc_chat_embedding_model": DOC_CHAT_EMBEDDING_MODEL,
+                "doc_chat_semantic_top_k": DOC_CHAT_SEMANTIC_TOP_K,
+                "doc_chat_bm25_top_k": DOC_CHAT_BM25_TOP_K,
+                "doc_chat_rrf_k": DOC_CHAT_RRF_K,
+                "doc_chat_fused_limit": DOC_CHAT_HYBRID_FUSED_LIMIT,
+                "doc_chat_rerank_top_k": DOC_CHAT_RERANK_TOP_K,
+                "reranker_url": RERANKER_URL,
                 "model_name": MODEL_NAME,
                 "model_version": MODEL_VERSION,
                 "prompt_version": PROMPT_VERSION,
@@ -925,14 +2272,26 @@ async def main() -> None:
 
             for _partition, messages in batches.items():
                 for message in messages:
-                    try:
-                        event = parse_event(message.value)
-                    except Exception as err:  # noqa: BLE001
-                        logger.exception("invalid analysis-requested payload", extra={"error": str(err)})
-                        await consumer.commit()
-                        continue
+                    if message.topic == TOPIC_IN:
+                        try:
+                            event = parse_event(message.value)
+                        except Exception as err:  # noqa: BLE001
+                            logger.exception("invalid analysis-requested payload", extra={"error": str(err)})
+                            await consumer.commit()
+                            continue
 
-                    await process_event(event, db, session, producer, qdrant)
+                        await process_event(event, db, session, producer, qdrant)
+                    elif message.topic == TOPIC_CHAT_IN:
+                        try:
+                            chat_event = parse_chat_event(message.value)
+                        except Exception as err:  # noqa: BLE001
+                            logger.exception("invalid chat-requested payload", extra={"error": str(err)})
+                            await consumer.commit()
+                            continue
+
+                        await process_chat_event(chat_event, db, session, producer, qdrant)
+                    else:
+                        logger.warning("received message from unexpected topic", extra={"topic": message.topic})
                     await consumer.commit()
     finally:
         logger.info("llm-analysis service stopping")

@@ -32,12 +32,18 @@ type filesToParseEvent struct {
 
 const (
 	mimeTypePDF  = "application/pdf"
+	mimeTypeDOC  = "application/msword"
 	mimeTypeDOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 
 func normalizeDetectedMime(fileName, detectedMime string) (string, string) {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	switch ext {
+	case ".doc":
+		if detectedMime == "application/octet-stream" || strings.Contains(detectedMime, "msword") {
+			return mimeTypeDOC, "extension_override_doc_from_octet_stream_or_msword"
+		}
+		return mimeTypeDOC, "extension_priority_doc"
 	case ".docx":
 		if detectedMime == "application/zip" || detectedMime == "application/octet-stream" {
 			return mimeTypeDOCX, "extension_override_docx_from_zip_or_octet_stream"
@@ -53,6 +59,7 @@ func normalizeDetectedMime(fileName, detectedMime string) (string, string) {
 
 func isSupportedMimeType(mimeType string) bool {
 	return mimeType == mimeTypePDF ||
+		mimeType == mimeTypeDOC ||
 		mimeType == mimeTypeDOCX ||
 		strings.HasPrefix(mimeType, "text/plain")
 }

@@ -1,12 +1,12 @@
 import asyncio
 import ast
 import hashlib
-import io
 import json
 import logging
 import os
 import re
 import signal
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -15,10 +15,9 @@ from pathlib import PurePosixPath
 
 import aiohttp
 import asyncpg
-import docx
-import pypdf
 import redis.asyncio as redis
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from liteparse import LiteParse
 
 TOPIC_IN = os.getenv("TOPIC_IN", "files-to-parse")
 TOPIC_OUT = os.getenv("TOPIC_OUT", "text-to-classify")
@@ -28,6 +27,14 @@ POSTGRES_URL = os.getenv("DB_CONN_STR", os.getenv("POSTGRES_URL", "postgresql://
 SEAWEED_URL = os.getenv("FILER_URL", os.getenv("SEAWEED_URL", "http://seaweedfs-filer:8888"))
 PARSER_VERSION = os.getenv("PARSER_VERSION", "parser-1.0.0")
 TEXT_CANONICAL_PREFIX = os.getenv("TEXT_CANONICAL_PREFIX", "/texts")
+LITEPARSE_OCR_ENABLED = os.getenv("LITEPARSE_OCR_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LITEPARSE_MAX_PAGES_RAW = os.getenv("LITEPARSE_MAX_PAGES", "").strip()
+LITEPARSE_MAX_PAGES = int(LITEPARSE_MAX_PAGES_RAW) if LITEPARSE_MAX_PAGES_RAW else None
 
 MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 MIN_TEXT_LEN = 50
@@ -45,6 +52,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("ParserService")
+_liteparse_client: LiteParse | None = None
 
 
 @dataclass
@@ -127,6 +135,8 @@ def detect_format(s3_path: str, mime_type: str) -> str:
 
     if extension == ".pdf":
         return "pdf"
+    if extension == ".doc":
+        return "doc"
     if extension == ".docx":
         return "docx"
     if extension == ".txt":
@@ -134,10 +144,11 @@ def detect_format(s3_path: str, mime_type: str) -> str:
 
     if normalized_mime == "application/pdf":
         return "pdf"
+    if normalized_mime in ("application/msword", "application/vnd.ms-word"):
+        return "doc"
     if normalized_mime in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/docx",
-        "application/msword",
     ):
         return "docx"
     if normalized_mime.startswith("text/plain"):
@@ -212,19 +223,47 @@ def sanitize_error_message(err: Exception) -> str:
     return full
 
 
-def extract_from_pdf_bytes(data: bytes) -> str:
-    text_chunks: list[str] = []
-    reader = pypdf.PdfReader(io.BytesIO(data))
-    for page in reader.pages:
-        page_text = coerce_to_text(page.extract_text() or "")
-        if page_text:
-            text_chunks.append(page_text)
-    return "\n".join(text_chunks)
+def get_liteparse_client() -> LiteParse:
+    global _liteparse_client
+    if _liteparse_client is None:
+        _liteparse_client = LiteParse()
+    return _liteparse_client
 
 
-def extract_from_docx_bytes(data: bytes) -> str:
-    document = docx.Document(io.BytesIO(data))
-    return "\n".join(coerce_to_text(paragraph.text) for paragraph in document.paragraphs)
+def extract_with_liteparse(data: bytes, s3_path: str) -> str:
+    suffix = PurePosixPath(s3_path).suffix.lower() or ".bin"
+    parser = get_liteparse_client()
+
+    parse_kwargs: dict[str, object] = {"ocr_enabled": LITEPARSE_OCR_ENABLED}
+    if LITEPARSE_MAX_PAGES is not None:
+        parse_kwargs["max_pages"] = LITEPARSE_MAX_PAGES
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as temp_file:
+        temp_file.write(data)
+        temp_file.flush()
+        result = parser.parse(temp_file.name, **parse_kwargs)
+
+    text_value: object | None
+    if isinstance(result, str):
+        text_value = result
+    else:
+        text_value = getattr(result, "text", None)
+        if text_value is None and isinstance(result, dict):
+            text_value = result.get("text")
+        if text_value is None:
+            pages = getattr(result, "pages", None)
+            if isinstance(pages, list):
+                page_texts: list[str] = []
+                for page in pages:
+                    page_text = coerce_to_text(getattr(page, "text", "")).strip()
+                    if page_text:
+                        page_texts.append(page_text)
+                text_value = "\n".join(page_texts)
+
+    if text_value is None:
+        raise RuntimeError("liteparse returned empty text payload")
+
+    return coerce_to_text(text_value)
 
 
 def extract_from_txt_bytes(data: bytes) -> str:
@@ -234,10 +273,8 @@ def extract_from_txt_bytes(data: bytes) -> str:
 def extract_text(data: bytes, s3_path: str, mime_type: str) -> str:
     file_format = detect_format(s3_path, mime_type)
 
-    if file_format == "pdf":
-        text = extract_from_pdf_bytes(data)
-    elif file_format == "docx":
-        text = extract_from_docx_bytes(data)
+    if file_format in {"pdf", "doc", "docx"}:
+        text = extract_with_liteparse(data, s3_path)
     elif file_format == "txt":
         text = extract_from_txt_bytes(data)
     else:
@@ -250,6 +287,13 @@ def extract_text(data: bytes, s3_path: str, mime_type: str) -> str:
 
 
 async def persist_error(db: asyncpg.Connection, file_id: int, message: str) -> None:
+    logger.error(
+        "marking file as ERROR",
+        extra={
+            "file_id": file_id,
+            "failure_cause": message,
+        },
+    )
     await db.execute(
         """
         UPDATE files
@@ -464,6 +508,8 @@ async def main() -> None:
             "seaweed": SEAWEED_URL,
             "parser_version": PARSER_VERSION,
             "text_canonical_prefix": TEXT_CANONICAL_PREFIX,
+            "liteparse_ocr_enabled": LITEPARSE_OCR_ENABLED,
+            "liteparse_max_pages": LITEPARSE_MAX_PAGES,
         },
     )
 

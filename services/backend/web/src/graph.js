@@ -163,6 +163,7 @@ function isTextualFile(fileType) {
 	if (!fileType) return false
 	return (
 		fileType === 'application/pdf' ||
+		fileType === 'application/msword' ||
 		fileType ===
 			'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
 		fileType.startsWith('text/plain')

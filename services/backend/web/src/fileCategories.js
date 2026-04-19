@@ -45,6 +45,9 @@ export function getCategoryByFileType(fileType, fileName = '') {
 	} else if (normalizedName.endsWith('.docx')) {
 		category = 'Document'
 		reason = 'filename_extension_docx_fallback'
+	} else if (normalizedName.endsWith('.doc')) {
+		category = 'Document'
+		reason = 'filename_extension_doc_fallback'
 	} else if (normalizedName.endsWith('.pdf')) {
 		category = 'Document'
 		reason = 'filename_extension_pdf_fallback'

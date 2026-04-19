@@ -2,6 +2,7 @@ import 'htmx.org'
 import { updateUserGraph } from './graph'
 
 const FILES_DATA_URL = '/profile/files/data'
+const PREFERENCES_API_URL = '/api/preferences'
 const POLL_INTERVAL_MS = 5000
 const ANALYSIS_POLL_INTERVAL_MS = 2500
 const CHAT_POLL_INTERVAL_MS = 2500
@@ -12,6 +13,7 @@ const CHAT_SCOPE_ALL = 'all-docs'
 
 const CHAT_PROVIDER_LOCAL = 'local'
 const CHAT_PROVIDER_GIGACHAT = 'gigachat'
+const PREFERENCES_PAGE_PATH = '/preferences'
 
 let refreshInFlight = false
 let pollingId = null
@@ -67,6 +69,18 @@ const chatState = {
 	uiError: '',
 }
 
+const preferencesState = {
+	loaded: false,
+	loading: false,
+	saving: false,
+	error: '',
+	success: '',
+	summaryProvider: CHAT_PROVIDER_LOCAL,
+	chaptersProvider: CHAT_PROVIDER_LOCAL,
+	flashcardsProvider: CHAT_PROVIDER_LOCAL,
+	chatDefaultProvider: CHAT_PROVIDER_LOCAL,
+}
+
 function analysisStartUrl(fileId) {
 	return `/api/files/${encodeURIComponent(fileId)}/analysis`
 }
@@ -85,6 +99,15 @@ function chatThreadMessagesUrl(threadId) {
 
 function chatJobUrl(jobId) {
 	return `/api/chat/jobs/${encodeURIComponent(jobId)}`
+}
+
+function preferencesApiUrl() {
+	return PREFERENCES_API_URL
+}
+
+function isPreferencesPage() {
+	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
+	return normalized === PREFERENCES_PAGE_PATH
 }
 
 function analysisTypeLabel(analysisType) {
@@ -571,6 +594,174 @@ async function startAnalysisRequest(fileId, fileName, analysisType) {
 	}
 }
 
+function ensurePreferencesPanelRoot() {
+	let root = document.getElementById('preferences-panel-root')
+	if (root) return root
+
+	const placeholder = document.getElementById('preferences-page-root')
+	if (placeholder) {
+		placeholder.id = 'preferences-panel-root'
+		placeholder.className = 'w-full max-w-4xl mx-auto mt-4 px-4'
+		return placeholder
+	}
+
+	const main = document.querySelector('main')
+	if (!main) return null
+
+	root = document.createElement('section')
+	root.id = 'preferences-panel-root'
+	root.className = 'w-full max-w-4xl mx-auto mt-4 px-4'
+
+	const profileCard = main.querySelector('.max-w-md')
+	if (profileCard && profileCard.parentElement === main) {
+		main.insertBefore(root, profileCard)
+	} else {
+		main.prepend(root)
+	}
+
+	return root
+}
+
+function renderPreferencesPanel() {
+	const root = document.getElementById('preferences-panel-root')
+	if (!root) return
+
+	const providerSelect = (dataKey, value) => `
+        <select class="select select-sm select-bordered w-full" data-pref-provider="${dataKey}">
+            <option value="${CHAT_PROVIDER_LOCAL}" ${value === CHAT_PROVIDER_LOCAL ? 'selected' : ''}>Local</option>
+            <option value="${CHAT_PROVIDER_GIGACHAT}" ${value === CHAT_PROVIDER_GIGACHAT ? 'selected' : ''}>GigaChat</option>
+        </select>
+    `
+
+	const nextHtml = `
+        <div class="border border-base-300 rounded-lg bg-base-100 text-base-content shadow-md p-4">
+            <div class="flex items-center gap-2 mb-3">
+                <h2 class="text-lg font-semibold mr-auto">Preferences</h2>
+                ${preferencesState.loading || preferencesState.saving ? '<span class="loading loading-spinner loading-sm"></span>' : ''}
+            </div>
+            <p class="text-sm opacity-75 mb-4">Выбор LLM-провайдера для каждого режима анализа и дефолта в новом чате.</p>
+
+            ${preferencesState.error ? `<p class="text-sm text-error mb-3">${escapeHtml(preferencesState.error)}</p>` : ''}
+            ${preferencesState.success ? `<p class="text-sm text-success mb-3">${escapeHtml(preferencesState.success)}</p>` : ''}
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label class="form-control">
+                    <span class="label-text text-xs mb-1">Summary provider</span>
+                    ${providerSelect('summary', preferencesState.summaryProvider)}
+                </label>
+                <label class="form-control">
+                    <span class="label-text text-xs mb-1">Chapters provider</span>
+                    ${providerSelect('chapters', preferencesState.chaptersProvider)}
+                </label>
+                <label class="form-control">
+                    <span class="label-text text-xs mb-1">Flashcards provider</span>
+                    ${providerSelect('flashcards', preferencesState.flashcardsProvider)}
+                </label>
+                <label class="form-control">
+                    <span class="label-text text-xs mb-1">Default chat provider</span>
+                    ${providerSelect('chat_default', preferencesState.chatDefaultProvider)}
+                </label>
+            </div>
+
+            <div class="mt-4">
+                <button
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    data-pref-save
+                    ${preferencesState.saving ? 'disabled' : ''}
+                >
+                    ${preferencesState.saving ? 'Saving...' : 'Save Preferences'}
+                </button>
+            </div>
+        </div>
+    `
+
+	root.innerHTML = nextHtml
+}
+
+async function loadPreferences(force = false) {
+	if (preferencesState.loading) return
+	if (preferencesState.loaded && !force) return
+
+	preferencesState.loading = true
+	preferencesState.error = ''
+	preferencesState.success = ''
+	if (isPreferencesPage()) renderPreferencesPanel()
+
+	try {
+		const response = await fetch(preferencesApiUrl(), {
+			headers: { Accept: 'application/json' },
+		})
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Ошибка загрузки preferences'))
+		}
+
+		const payload = await response.json()
+		applyPreferences(payload)
+		applyPreferencesToDraftProvider()
+		renderChatPanel()
+	} catch (err) {
+		preferencesState.error = normalizeApiError(
+			err?.message,
+			'Ошибка загрузки preferences'
+		)
+	} finally {
+		preferencesState.loading = false
+		if (isPreferencesPage()) renderPreferencesPanel()
+	}
+}
+
+async function savePreferences() {
+	if (preferencesState.saving) return
+
+	preferencesState.saving = true
+	preferencesState.error = ''
+	preferencesState.success = ''
+	renderPreferencesPanel()
+
+	const payload = {
+		summary_provider: normalizeChatProviderValue(preferencesState.summaryProvider),
+		chapters_provider: normalizeChatProviderValue(
+			preferencesState.chaptersProvider
+		),
+		flashcards_provider: normalizeChatProviderValue(
+			preferencesState.flashcardsProvider
+		),
+		chat_default_provider: normalizeChatProviderValue(
+			preferencesState.chatDefaultProvider
+		),
+	}
+
+	try {
+		const response = await fetch(preferencesApiUrl(), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+			},
+			body: JSON.stringify(payload),
+		})
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Ошибка сохранения preferences'))
+		}
+
+		const saved = await response.json()
+		applyPreferences(saved)
+		applyPreferencesToDraftProvider()
+		chatState.uiError = ''
+		preferencesState.success = 'Preferences saved'
+		renderChatPanel()
+	} catch (err) {
+		preferencesState.error = normalizeApiError(
+			err?.message,
+			'Ошибка сохранения preferences'
+		)
+	} finally {
+		preferencesState.saving = false
+		renderPreferencesPanel()
+	}
+}
+
 function normalizeChatScopeValue(value) {
 	const normalized = String(value || '').trim().toLowerCase()
 	if (
@@ -587,6 +778,31 @@ function normalizeChatProviderValue(value) {
 	const normalized = String(value || '').trim().toLowerCase()
 	if (normalized === CHAT_PROVIDER_GIGACHAT) return CHAT_PROVIDER_GIGACHAT
 	return CHAT_PROVIDER_LOCAL
+}
+
+function normalizePreferencesPayload(raw) {
+	return {
+		summaryProvider: normalizeChatProviderValue(raw?.summary_provider),
+		chaptersProvider: normalizeChatProviderValue(raw?.chapters_provider),
+		flashcardsProvider: normalizeChatProviderValue(raw?.flashcards_provider),
+		chatDefaultProvider: normalizeChatProviderValue(raw?.chat_default_provider),
+	}
+}
+
+function applyPreferences(prefs) {
+	const normalized = normalizePreferencesPayload(prefs || {})
+	preferencesState.summaryProvider = normalized.summaryProvider
+	preferencesState.chaptersProvider = normalized.chaptersProvider
+	preferencesState.flashcardsProvider = normalized.flashcardsProvider
+	preferencesState.chatDefaultProvider = normalized.chatDefaultProvider
+	preferencesState.loaded = true
+}
+
+function applyPreferencesToDraftProvider() {
+	const preferred = normalizeChatProviderValue(preferencesState.chatDefaultProvider)
+	if (!chatState.activeThreadId) {
+		chatState.draftProvider = preferred
+	}
 }
 
 function normalizeChatThread(raw) {
@@ -1366,6 +1582,9 @@ async function handleGraphChatOpenRequest(detail) {
 	if (!fileId) return
 
 	chatState.draftScope = CHAT_SCOPE_SINGLE
+	chatState.draftProvider = normalizeChatProviderValue(
+		preferencesState.chatDefaultProvider
+	)
 	chatState.draftSelectedFileIds = [fileId]
 	chatState.uiError = ''
 	renderChatPanel()
@@ -1679,7 +1898,50 @@ function setupAnalysisActions() {
 	})
 }
 
+function setupPreferencesActions() {
+	document.addEventListener('change', event => {
+		const providerSelect = event.target.closest('[data-pref-provider]')
+		if (!providerSelect) return
+
+		const nextValue = normalizeChatProviderValue(providerSelect.value)
+		switch (providerSelect.dataset.prefProvider) {
+			case 'summary':
+				preferencesState.summaryProvider = nextValue
+				break
+			case 'chapters':
+				preferencesState.chaptersProvider = nextValue
+				break
+			case 'flashcards':
+				preferencesState.flashcardsProvider = nextValue
+				break
+			case 'chat_default':
+				preferencesState.chatDefaultProvider = nextValue
+				break
+			default:
+				return
+		}
+
+		preferencesState.success = ''
+		preferencesState.error = ''
+		renderPreferencesPanel()
+	})
+
+	document.addEventListener('click', event => {
+		const saveButton = event.target.closest('[data-pref-save]')
+		if (!saveButton) return
+		void savePreferences()
+	})
+}
+
 document.addEventListener('DOMContentLoaded', function () {
+	if (isPreferencesPage()) {
+		ensurePreferencesPanelRoot()
+		renderPreferencesPanel()
+		setupPreferencesActions()
+		void loadPreferences(false)
+		return
+	}
+
 	const initialFileData = readInitialFileData()
 	if (initialFileData) {
 		// Первое рендерирование всегда принудительное
@@ -1697,6 +1959,9 @@ document.addEventListener('DOMContentLoaded', function () {
 	setupChatActions()
 
 	void (async () => {
+		if (initialFileData || isPreferencesPage()) {
+			await loadPreferences(false)
+		}
 		await loadChatThreads(false)
 		if (!chatState.activeThreadId && chatState.threads.length > 0) {
 			await openChatThread(chatState.threads[0].thread_id)

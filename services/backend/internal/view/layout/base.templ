@@ -24,18 +24,23 @@ templ Base(props BaseProps) {
 }
 
 templ header(user *service.User) {
-    <header class="navbar bg-primary text-primary-content" hx-boost="true">
+    <header class="navbar bg-primary text-primary-content">
         <div class="flex-none">
-            <a href="/" class="btn btn-ghost text-xl">My App</a>
+            <a href="/" class="btn btn-ghost text-xl">HALTEFEST</a>
         </div>
         <div class="flex-1">
-            <ul class="menu menu-horizontal">
+            <ul class="menu menu-horizontal px-1">
                 <li><a href="/">Home</a></li>
                 <li><a href="/about">About</a></li>
+            </ul>
+        </div>
+        <div class="flex-none">
+            <ul class="menu menu-horizontal px-1">
                 if user == nil {
                     <li><a href="/register">Register</a></li>
                     <li><a href="/login">Login</a></li>
                 } else {
+                    <li><a href="/preferences">Preferences</a></li>
                     <li><a href="/profile">Profile</a></li>
                     <li>
                         <form method="POST" action="/logout">

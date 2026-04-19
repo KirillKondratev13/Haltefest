@@ -132,7 +132,11 @@ func (fh *FileHandler) handleCreateChatThread(w http.ResponseWriter, r *http.Req
 
 	provider := strings.TrimSpace(request.Provider)
 	if provider == "" {
-		provider = chatProviderLocal
+		prefs, err := fh.loadUserLLMPreferences(r.Context(), fh.FileService.DB, user.ID)
+		if err != nil {
+			return err
+		}
+		provider = prefs.ChatDefaultProvider
 	}
 	provider, ok = normalizeLLMProvider(provider)
 	if !ok {

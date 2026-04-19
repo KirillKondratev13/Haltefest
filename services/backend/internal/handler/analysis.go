@@ -23,6 +23,7 @@ type startAnalysisResponse struct {
 	JobID        int64  `json:"job_id"`
 	Status       string `json:"status"`
 	AnalysisType string `json:"analysis_type"`
+	Provider     string `json:"provider"`
 	FileID       int    `json:"file_id"`
 	Reused       bool   `json:"reused"`
 }
@@ -31,6 +32,7 @@ type analysisJobResponse struct {
 	JobID        int64            `json:"job_id"`
 	Status       string           `json:"status"`
 	AnalysisType string           `json:"analysis_type"`
+	Provider     string           `json:"provider"`
 	FileID       int              `json:"file_id"`
 	Error        *string          `json:"error"`
 	Result       *json.RawMessage `json:"result"`
@@ -39,6 +41,7 @@ type analysisJobResponse struct {
 type latestAnalysisResponse struct {
 	FileID       int             `json:"file_id"`
 	AnalysisType string          `json:"analysis_type"`
+	Provider     string          `json:"provider"`
 	Status       string          `json:"status"`
 	Result       json.RawMessage `json:"result"`
 }
@@ -49,6 +52,7 @@ type analysisRequestedEvent struct {
 	FileID       int    `json:"file_id"`
 	UserID       int    `json:"user_id"`
 	AnalysisType string `json:"analysis_type"`
+	Provider     string `json:"provider"`
 	RequestedAt  string `json:"requested_at"`
 }
 
@@ -88,6 +92,12 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback(r.Context())
 
+	prefs, err := fh.loadUserLLMPreferences(r.Context(), tx, user.ID)
+	if err != nil {
+		return err
+	}
+	provider := providerForAnalysisType(prefs, analysisType)
+
 	var fileStatus *string
 	err = tx.QueryRow(r.Context(), `
 		SELECT status
@@ -116,11 +126,12 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 		WHERE user_id = $1
 		  AND file_id = $2
 		  AND analysis_type = $3
+		  AND provider = $4
 		  AND status IN ('QUEUED', 'PROCESSING')
 		ORDER BY created_at DESC
 		LIMIT 1
 		FOR UPDATE
-	`, user.ID, fileID, analysisType).Scan(&existingJobID, &existingJobStatus)
+	`, user.ID, fileID, analysisType, provider).Scan(&existingJobID, &existingJobStatus)
 	if err == nil {
 		if err := tx.Commit(r.Context()); err != nil {
 			return err
@@ -130,6 +141,7 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 			JobID:        existingJobID,
 			Status:       existingJobStatus,
 			AnalysisType: analysisType,
+			Provider:     provider,
 			FileID:       fileID,
 			Reused:       true,
 		})
@@ -144,11 +156,11 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 	var jobStatus string
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO analysis_jobs (
-			file_id, user_id, analysis_type, status, params_json, requested_at, created_at, updated_at
+			file_id, user_id, analysis_type, provider, status, params_json, requested_at, created_at, updated_at
 		)
-		VALUES ($1, $2, $3, 'QUEUED', $4::jsonb, $5, $5, $5)
+		VALUES ($1, $2, $3, $4, 'QUEUED', $5::jsonb, $6, $6, $6)
 		RETURNING id, status
-	`, fileID, user.ID, analysisType, string(paramsJSON), requestedAt).Scan(&jobID, &jobStatus)
+	`, fileID, user.ID, analysisType, provider, string(paramsJSON), requestedAt).Scan(&jobID, &jobStatus)
 	if err != nil {
 		return err
 	}
@@ -164,6 +176,7 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 		FileID:       fileID,
 		UserID:       user.ID,
 		AnalysisType: analysisType,
+		Provider:     provider,
 		RequestedAt:  requestedAt.Format(time.RFC3339),
 	})
 	if err != nil {
@@ -188,6 +201,7 @@ func (fh *FileHandler) handleStartAnalysis(w http.ResponseWriter, r *http.Reques
 		JobID:        jobID,
 		Status:       jobStatus,
 		AnalysisType: analysisType,
+		Provider:     provider,
 		FileID:       fileID,
 		Reused:       false,
 	})
@@ -208,13 +222,14 @@ func (fh *FileHandler) handleGetAnalysisJob(w http.ResponseWriter, r *http.Reque
 
 	var response analysisJobResponse
 	err = fh.FileService.DB.QueryRow(r.Context(), `
-		SELECT id, status, analysis_type, file_id, error
+		SELECT id, status, analysis_type, provider, file_id, error
 		FROM analysis_jobs
 		WHERE id = $1 AND user_id = $2
 	`, jobID, user.ID).Scan(
 		&response.JobID,
 		&response.Status,
 		&response.AnalysisType,
+		&response.Provider,
 		&response.FileID,
 		&response.Error,
 	)
@@ -280,8 +295,9 @@ func (fh *FileHandler) handleGetLatestAnalysis(w http.ResponseWriter, r *http.Re
 	}
 
 	var resultText string
+	var provider string
 	err = fh.FileService.DB.QueryRow(r.Context(), `
-		SELECT ar.result_json::text
+		SELECT ar.result_json::text, aj.provider
 		FROM analysis_jobs aj
 		JOIN analysis_results ar ON ar.job_id = aj.id
 		WHERE aj.user_id = $1
@@ -290,7 +306,7 @@ func (fh *FileHandler) handleGetLatestAnalysis(w http.ResponseWriter, r *http.Re
 		  AND aj.status = 'DONE'
 		ORDER BY aj.created_at DESC
 		LIMIT 1
-	`, user.ID, fileID, analysisType).Scan(&resultText)
+	`, user.ID, fileID, analysisType).Scan(&resultText, &provider)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "Analysis result not found", http.StatusNotFound)
@@ -302,6 +318,7 @@ func (fh *FileHandler) handleGetLatestAnalysis(w http.ResponseWriter, r *http.Re
 	return writeJSON(w, http.StatusOK, latestAnalysisResponse{
 		FileID:       fileID,
 		AnalysisType: analysisType,
+		Provider:     provider,
 		Status:       "DONE",
 		Result:       json.RawMessage(resultText),
 	})

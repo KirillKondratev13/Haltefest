@@ -226,6 +226,7 @@ class AnalysisEvent:
     file_id: int
     user_id: int
     analysis_type: str
+    provider: str
     requested_at: str
 
     def to_dict(self) -> dict:
@@ -235,6 +236,7 @@ class AnalysisEvent:
             "file_id": self.file_id,
             "user_id": self.user_id,
             "analysis_type": self.analysis_type,
+            "provider": self.provider,
             "requested_at": self.requested_at,
         }
 
@@ -270,12 +272,16 @@ def parse_event(raw_value: bytes) -> AnalysisEvent:
     analysis_type = str(payload["analysis_type"]).strip().lower()
     if analysis_type not in {"summary", "chapters", "flashcards"}:
         raise ValueError("invalid analysis_type")
+    provider = str(payload.get("provider", "local")).strip().lower()
+    if provider not in {"local", "gigachat"}:
+        raise ValueError("invalid provider")
     return AnalysisEvent(
         event_id=str(payload["event_id"]),
         job_id=int(payload["job_id"]),
         file_id=int(payload["file_id"]),
         user_id=int(payload["user_id"]),
         analysis_type=analysis_type,
+        provider=provider,
         requested_at=str(payload["requested_at"]),
     )
 
@@ -721,7 +727,21 @@ async def call_gigachat(session: aiohttp.ClientSession, prompt: str, timeout: in
     return content
 
 
-async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[str, list[int]]:
+async def call_provider_llm(
+    session: aiohttp.ClientSession,
+    provider: str,
+    prompt: str,
+    timeout: int | None = None,
+) -> str:
+    if provider == "local":
+        return await call_ollama(session, prompt, timeout=timeout)
+    if provider == "gigachat":
+        effective_timeout = timeout if timeout is not None else GIGACHAT_TIMEOUT_SECONDS
+        return await call_gigachat(session, prompt, timeout=effective_timeout)
+    raise TerminalError(f"unsupported provider '{provider}'")
+
+
+async def generate_summary(session: aiohttp.ClientSession, text: str, provider: str) -> tuple[str, list[int]]:
     windows = split_into_windows(text, SUMMARY_WINDOW_CHARS)
 
     if len(windows) == 1:
@@ -730,7 +750,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
             "Ответ должен быть на том же языке, что и текст. Пиши связным текстом, без списков и маркеров.\n\n"
             f"Текст:\n{text[:8000]}"
         )
-        result = await call_ollama(session, prompt)
+        result = await call_provider_llm(session, provider, prompt)
         return result, [1]
 
     window_summaries: list[str] = []
@@ -740,7 +760,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
             "Пиши связным текстом, без списков. Ответ на том же языке, что и текст.\n\n"
             f"Часть {i+1}/{len(windows)}:\n{window}"
         )
-        partial = await call_ollama(session, prompt, timeout=60)
+        partial = await call_provider_llm(session, provider, prompt, timeout=60)
         window_summaries.append(partial)
 
     combined = "\n\n".join(window_summaries)
@@ -750,7 +770,7 @@ async def generate_summary(session: aiohttp.ClientSession, text: str) -> tuple[s
         "Пиши связным текстом, без списков. Ответ на том же языке, что и текст.\n\n"
         f"Части:\n{combined[:8000]}"
     )
-    result = await call_ollama(session, final_prompt)
+    result = await call_provider_llm(session, provider, final_prompt)
     return result, list(range(1, len(windows) + 1))
 
 
@@ -784,7 +804,7 @@ def segment_by_headings(text: str) -> list[tuple[str, str]]:
     return segments[:10]
 
 
-async def generate_chapters(session: aiohttp.ClientSession, text: str) -> tuple[str, list[int]]:
+async def generate_chapters(session: aiohttp.ClientSession, text: str, provider: str) -> tuple[str, list[int]]:
     segments = segment_by_headings(text)
     if not segments:
         return "Не удалось выделить главы: документ пуст.", []
@@ -801,7 +821,7 @@ async def generate_chapters(session: aiohttp.ClientSession, text: str) -> tuple[
             "Ответ на том же языке, что и текст. Без списков и маркеров.\n\n"
             f"Заголовок: {title}\n\nТекст раздела:\n{body}"
         )
-        summary = await call_ollama(session, prompt, timeout=60)
+        summary = await call_provider_llm(session, provider, prompt, timeout=60)
         lines.append(f"Глава {idx}: {title}\n{summary}")
         source_ids.append(idx)
 
@@ -1276,6 +1296,7 @@ async def generate_flashcards(
     qdrant: QdrantClient,
     user_id: int,
     file_id: int,
+    provider: str,
 ) -> tuple[str, list[int]]:
     chunks = retrieve_chunks(qdrant, user_id, file_id)
     if not chunks:
@@ -1304,7 +1325,7 @@ async def generate_flashcards(
             "внутри question/answer не добавляй префиксы 'Вопрос:'/'Ответ:'.\n\n"
             f"Текст:\n{chunk_text[:1500]}"
         )
-        raw_card = await call_ollama(session, prompt, timeout=45)
+        raw_card = await call_provider_llm(session, provider, prompt, timeout=45)
         parsed = parse_and_normalize_flashcard(raw_card)
         if parsed is None:
             continue
@@ -1338,6 +1359,7 @@ async def generate_flashcards(
 
 async def run_analysis(
     analysis_type: str,
+    provider: str,
     session: aiohttp.ClientSession,
     text: str,
     qdrant: QdrantClient,
@@ -1345,11 +1367,11 @@ async def run_analysis(
     file_id: int,
 ) -> tuple[str, list[int]]:
     if analysis_type == "summary":
-        return await generate_summary(session, text)
+        return await generate_summary(session, text, provider)
     if analysis_type == "chapters":
-        return await generate_chapters(session, text)
+        return await generate_chapters(session, text, provider)
     if analysis_type == "flashcards":
-        return await generate_flashcards(session, qdrant, user_id, file_id)
+        return await generate_flashcards(session, qdrant, user_id, file_id, provider)
     raise TerminalError(f"unsupported analysis type: {analysis_type}")
 
 
@@ -1371,7 +1393,7 @@ async def download_text(session: aiohttp.ClientSession, s3_text_path: str) -> st
 async def claim_job_attempt(db: asyncpg.Connection, event: AnalysisEvent) -> tuple[str, int]:
     row = await db.fetchrow(
         """
-        SELECT file_id, user_id, analysis_type, status, attempts
+        SELECT file_id, user_id, analysis_type, provider, status, attempts
         FROM analysis_jobs
         WHERE id = $1
         FOR UPDATE
@@ -1385,6 +1407,8 @@ async def claim_job_attempt(db: asyncpg.Connection, event: AnalysisEvent) -> tup
         raise TerminalError(f"event/job mismatch for job_id={event.job_id}")
     if str(row["analysis_type"]).strip().lower() != event.analysis_type:
         raise TerminalError(f"analysis type mismatch for job_id={event.job_id}")
+    if str(row["provider"] or "").strip().lower() != event.provider:
+        raise TerminalError(f"provider mismatch for analysis job: job_id={event.job_id}")
 
     status = str(row["status"] or "").upper()
     if status == "DONE":
@@ -1965,11 +1989,12 @@ async def process_event(
                 raise RuntimeError("canonical text is empty")
 
             result_text, source_chunk_ids = await run_analysis(
-                event.analysis_type, session, text, qdrant, event.user_id, event.file_id
+                event.analysis_type, event.provider, session, text, qdrant, event.user_id, event.file_id
             )
             result_json = {
                 "schema_version": SCHEMA_VERSION,
                 "analysis_type": event.analysis_type,
+                "provider": event.provider,
                 "result_text": result_text,
                 "source_chunk_ids": source_chunk_ids,
             }
@@ -1981,6 +2006,7 @@ async def process_event(
                     "event_id": event.event_id,
                     "job_id": event.job_id,
                     "analysis_type": event.analysis_type,
+                    "provider": event.provider,
                     "attempt": attempt,
                 },
             )
@@ -2007,6 +2033,7 @@ async def process_event(
                         "event_id": event.event_id,
                         "job_id": event.job_id,
                         "analysis_type": event.analysis_type,
+                        "provider": event.provider,
                         "attempt": current_attempt,
                         "error": safe_error,
                     },
@@ -2021,6 +2048,7 @@ async def process_event(
                     "event_id": event.event_id,
                     "job_id": event.job_id,
                     "analysis_type": event.analysis_type,
+                    "provider": event.provider,
                     "attempt": current_attempt,
                     "retry_in_sec": delay,
                 },

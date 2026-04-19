@@ -51,12 +51,15 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.authMiddleware)
 		r.Get("/profile", handler(auth.handleProfile))
+		r.Get("/preferences", handler(auth.handlePreferences))
 		r.Post("/logout", handler(auth.handleLogout))
 
 		r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
 		r.Get("/profile/files/download", handler(fileHandler.handleDownloadFile))
 		r.Get("/profile/files/data", handler(auth.handleProfileFilesData))
 		r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
+		r.Get("/api/preferences", handler(fileHandler.handleGetPreferences))
+		r.Post("/api/preferences", handler(fileHandler.handleUpsertPreferences))
 	})
 
 	r.Post("/api/files/{file_id}/analysis", handler(fileHandler.handleStartAnalysis))

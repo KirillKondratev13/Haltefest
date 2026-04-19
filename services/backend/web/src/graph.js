@@ -37,6 +37,7 @@ function ensureContextMenu() {
 	document.body.appendChild(contextMenu)
 
 	document.addEventListener('mousedown', event => {
+		if (!contextMenu) return
 		if (
 			contextMenu.style.display === 'block' &&
 			!contextMenu.contains(event.target)

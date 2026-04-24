@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  labels:
+    app: kafka
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: kafka
+          image: {{ .Values.infra.kafka.image }}
+          ports:
+            - name: kafka
+              containerPort: {{ .Values.infra.kafka.port }}
+            - name: controller
+              containerPort: {{ .Values.infra.kafka.controllerPort }}
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://:{{ .Values.infra.kafka.port }},CONTROLLER://:{{ .Values.infra.kafka.controllerPort }}"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka:{{ .Values.infra.kafka.port }}"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka:{{ .Values.infra.kafka.controllerPort }}"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "false"
+            - name: KAFKA_METADATA_MAX_AGE_MS
+              value: "5000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    app: kafka
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: {{ .Values.infra.kafka.port }}
+      targetPort: kafka

@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: parser
+  labels:
+    app: parser
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: parser
+  template:
+    metadata:
+      labels:
+        app: parser
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: parser
+          image: {{ printf "%s:%s" .Values.images.parser.repository .Values.images.parser.tag }}
+          imagePullPolicy: {{ .Values.images.parser.pullPolicy }}
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: FILER_URL
+              value: "http://seaweedfs-filer:8888"
+            - name: REDIS_URL
+              value: "redis://dragonfly:6379"
+            - name: DB_CONN_STR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: DB_CONN_STR
+            - name: PARSER_VERSION
+              value: "parser-2.0.0-liteparse"
+            - name: TEXT_CANONICAL_PREFIX
+              value: "/texts"
+            - name: LITEPARSE_OCR_ENABLED
+              value: "false"

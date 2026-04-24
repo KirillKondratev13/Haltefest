@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-analysis
+  labels:
+    app: llm-analysis
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-analysis
+  template:
+    metadata:
+      labels:
+        app: llm-analysis
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: llm-analysis
+          image: {{ printf "%s:%s" .Values.images.llmAnalysis.repository .Values.images.llmAnalysis.tag }}
+          imagePullPolicy: {{ .Values.images.llmAnalysis.pullPolicy }}
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: DB_CONN_STR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: DB_CONN_STR
+            - name: FILER_URL
+              value: "http://seaweedfs-filer:8888"
+            - name: KAFKA_ANALYSIS_REQUESTED_TOPIC
+              value: {{ .Values.llmAnalysis.kafkaAnalysisRequestedTopic | quote }}
+            - name: KAFKA_ANALYSIS_DLQ_TOPIC
+              value: {{ .Values.llmAnalysis.kafkaAnalysisDlqTopic | quote }}
+            - name: KAFKA_CHAT_REQUESTED_TOPIC
+              value: {{ .Values.llmAnalysis.kafkaChatRequestedTopic | quote }}
+            - name: KAFKA_CHAT_DLQ_TOPIC
+              value: {{ .Values.llmAnalysis.kafkaChatDlqTopic | quote }}
+            - name: KAFKA_CONSUMER_GROUP
+              value: {{ .Values.llmAnalysis.kafkaConsumerGroup | quote }}
+            - name: MAX_ATTEMPTS
+              value: {{ .Values.llmAnalysis.maxAttempts | quote }}
+            - name: LLM_TIMEOUT_SECONDS
+              value: {{ .Values.llmAnalysis.llmTimeoutSeconds | quote }}
+            - name: LLM_MODEL_NAME
+              value: {{ .Values.llmAnalysis.llmModelName | quote }}
+            - name: LLM_MODEL_VERSION
+              value: {{ .Values.llmAnalysis.llmModelVersion | quote }}
+            - name: PROMPT_VERSION
+              value: {{ .Values.llmAnalysis.promptVersion | quote }}
+            - name: OLLAMA_URL
+              value: {{ .Values.llmAnalysis.ollamaUrl | quote }}
+            - name: QDRANT_URL
+              value: {{ .Values.llmAnalysis.qdrantUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.llmAnalysis.llmModel | quote }}
+            - name: LLM_MODEL_FALLBACKS
+              value: {{ .Values.llmAnalysis.llmModelFallbacks | quote }}
+            - name: OLLAMA_NUM_CTX
+              value: {{ .Values.llmAnalysis.ollamaNumCtx | quote }}
+            - name: GIGACHAT_AUTH_URL
+              value: {{ .Values.llmAnalysis.gigachatAuthUrl | quote }}
+            - name: GIGACHAT_API_URL
+              value: {{ .Values.llmAnalysis.gigachatApiUrl | quote }}
+            - name: GIGACHAT_SCOPE
+              value: {{ .Values.llmAnalysis.gigachatScope | quote }}
+            - name: GIGACHAT_MODEL
+              value: {{ .Values.llmAnalysis.gigachatModel | quote }}
+            - name: GIGACHAT_TIMEOUT_SECONDS
+              value: {{ .Values.llmAnalysis.gigachatTimeoutSeconds | quote }}
+            - name: GIGACHAT_VERIFY_SSL
+              value: {{ .Values.llmAnalysis.gigachatVerifySsl | quote }}
+            - name: GIGACHAT_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: GIGACHAT_AUTH_KEY
+            - name: GIGACHAT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: GIGACHAT_CLIENT_ID
+            - name: GIGACHAT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: GIGACHAT_CLIENT_SECRET
+            - name: GIGACHAT_TOKEN_REFRESH_SKEW_SECONDS
+              value: {{ .Values.llmAnalysis.gigachatTokenRefreshSkewSeconds | quote }}
+            - name: DOC_CHAT_EMBEDDING_MODEL
+              value: {{ .Values.llmAnalysis.docChatEmbeddingModel | quote }}
+            - name: DOC_CHAT_SEMANTIC_TOP_K
+              value: {{ .Values.llmAnalysis.docChatSemanticTopK | quote }}
+            - name: DOC_CHAT_BM25_TOP_K
+              value: {{ .Values.llmAnalysis.docChatBm25TopK | quote }}
+            - name: DOC_CHAT_RRF_K
+              value: {{ .Values.llmAnalysis.docChatRrfK | quote }}
+            - name: DOC_CHAT_HYBRID_FUSED_LIMIT
+              value: {{ .Values.llmAnalysis.docChatHybridFusedLimit | quote }}
+            - name: DOC_CHAT_BM25_PAGE_SIZE
+              value: {{ .Values.llmAnalysis.docChatBm25PageSize | quote }}
+            - name: DOC_CHAT_BM25_MAX_CHUNKS
+              value: {{ .Values.llmAnalysis.docChatBm25MaxChunks | quote }}
+            - name: RERANKER_URL
+              value: {{ .Values.llmAnalysis.rerankerUrl | quote }}
+            - name: RERANKER_TIMEOUT_SECONDS
+              value: {{ .Values.llmAnalysis.rerankerTimeoutSeconds | quote }}
+            - name: DOC_CHAT_RERANK_TOP_K
+              value: {{ .Values.llmAnalysis.docChatRerankTopK | quote }}
+            - name: DOC_CHAT_MODEL_CONTEXT_WINDOW_TOKENS
+              value: {{ .Values.llmAnalysis.docChatModelContextWindowTokens | quote }}
+            - name: DOC_CHAT_SINGLE_DOC_THRESHOLD_TOKENS
+              value: {{ .Values.llmAnalysis.docChatSingleDocThresholdTokens | quote }}
+            - name: DOC_CHAT_RESERVED_SYSTEM_TOKENS
+              value: {{ .Values.llmAnalysis.docChatReservedSystemTokens | quote }}
+            - name: DOC_CHAT_RESERVED_HISTORY_TOKENS
+              value: {{ .Values.llmAnalysis.docChatReservedHistoryTokens | quote }}
+            - name: DOC_CHAT_RESERVED_OUTPUT_TOKENS
+              value: {{ .Values.llmAnalysis.docChatReservedOutputTokens | quote }}
+            - name: DOC_CHAT_SAFETY_MARGIN_TOKENS
+              value: {{ .Values.llmAnalysis.docChatSafetyMarginTokens | quote }}
+            - name: DOC_CHAT_CONTEXT_MAX_CHARS
+              value: {{ .Values.llmAnalysis.docChatContextMaxChars | quote }}
+          volumeMounts:
+            - name: embedding-model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: embedding-model-cache
+          emptyDir: {}

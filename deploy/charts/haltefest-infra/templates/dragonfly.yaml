@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dragonfly
+  labels:
+    app: dragonfly
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dragonfly
+  template:
+    metadata:
+      labels:
+        app: dragonfly
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: dragonfly
+          image: {{ .Values.infra.dragonfly.image }}
+          ports:
+            - name: redis
+              containerPort: {{ .Values.infra.dragonfly.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dragonfly
+  labels:
+    app: dragonfly
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: dragonfly
+  ports:
+    - name: redis
+      port: {{ .Values.infra.dragonfly.port }}
+      targetPort: redis

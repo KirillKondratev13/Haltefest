@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  labels:
+    app: qdrant
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: qdrant
+          image: {{ .Values.infra.qdrant.image }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.infra.qdrant.httpPort }}
+            - name: grpc
+              containerPort: {{ .Values.infra.qdrant.grpcPort }}
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+      volumes:
+        - name: qdrant-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  labels:
+    app: qdrant
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: qdrant
+  ports:
+    - name: http
+      port: {{ .Values.infra.qdrant.httpPort }}
+      targetPort: http
+    - name: grpc
+      port: {{ .Values.infra.qdrant.grpcPort }}
+      targetPort: grpc

@@ -32,6 +32,8 @@ TOPIC_NAME = "text-to-classify"
 MAX_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 0.5
 MAX_TOKENS = 4096
+AUTO_TOP_K = 5
+MAX_TAGS_PER_FILE = 10
 
 
 def retry_with_backoff(operation_name: str, operation: Callable[[], T]) -> T:
@@ -47,9 +49,12 @@ def retry_with_backoff(operation_name: str, operation: Callable[[], T]) -> T:
                 break
 
             logger.warning(
-                "%s failed, retrying",
+                "%s failed, retrying (attempt %s/%s, retry in %.1fs): %s",
                 operation_name,
-                extra={"attempt": attempt, "max_attempts": MAX_RETRIES, "retry_in_sec": delay},
+                attempt,
+                MAX_RETRIES,
+                delay,
+                err,
             )
             time.sleep(delay)
             delay *= 2
@@ -95,14 +100,99 @@ class NeoBERTTagger:
         embeddings = outputs.last_hidden_state[:, 0, :]
         return F.normalize(embeddings, p=2, dim=1)
 
-    def predict(self, text: str) -> tuple[str, float]:
+    def predict_top_k(self, text: str, top_k: int = AUTO_TOP_K) -> list[tuple[str, float]]:
         doc_embedding = self._embed_texts([text])
         similarities = torch.matmul(doc_embedding, self.tag_embeddings.T).squeeze(0)
-        best_idx = int(torch.argmax(similarities).item())
-        return self.tags[best_idx], float(similarities[best_idx].item())
+        # Convert cosine similarities to a proper probability distribution in [0, 1].
+        probabilities = F.softmax(similarities, dim=0)
+        max_k = max(1, min(top_k, len(self.tags)))
+        top_scores, top_indices = torch.topk(probabilities, k=max_k)
+        result: list[tuple[str, float]] = []
+        for score, index in zip(top_scores.tolist(), top_indices.tolist()):
+            result.append((self.tags[int(index)], float(score)))
+        return result
 
 
-def mark_as_ready(conn: psycopg2.extensions.connection, file_id: int, tag: str) -> None:
+def resolve_or_create_tag(
+    conn: psycopg2.extensions.connection, display_name: str, *, is_system: bool, created_by_user_id: int | None
+) -> int:
+    normalized_name = " ".join(display_name.strip().split()).lower()
+    if not normalized_name:
+        raise ValueError("normalized tag name is empty")
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM tags WHERE normalized_name = %s", (normalized_name,))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+
+        cur.execute(
+            """
+            INSERT INTO tags (normalized_name, display_name, is_system, created_by_user_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (normalized_name)
+            DO UPDATE SET display_name = EXCLUDED.display_name
+            RETURNING id
+            """,
+            (normalized_name, display_name, is_system, created_by_user_id),
+        )
+        created = cur.fetchone()
+        if not created:
+            raise RuntimeError("failed to resolve or create tag")
+        return int(created[0])
+
+
+def mark_as_ready(
+    conn: psycopg2.extensions.connection,
+    file_id: int,
+    top_predictions: list[tuple[str, float]],
+) -> None:
+    if not top_predictions:
+        raise ValueError("top_predictions is empty")
+
+    top1_tag = top_predictions[0][0]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM file_tags
+            WHERE file_id = %s AND source = 'MANUAL'
+            """,
+            (file_id,),
+        )
+        manual_count_row = cur.fetchone()
+        manual_count = int(manual_count_row[0]) if manual_count_row else 0
+
+    available_auto_slots = max(0, MAX_TAGS_PER_FILE - manual_count)
+    selected_predictions = top_predictions[: min(AUTO_TOP_K, available_auto_slots)]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM file_tags
+            WHERE file_id = %s AND source = 'AUTO'
+            """,
+            (file_id,),
+        )
+
+    for rank, (tag_name, score) in enumerate(selected_predictions, start=1):
+        tag_id = resolve_or_create_tag(conn, tag_name, is_system=True, created_by_user_id=None)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO file_tags (file_id, tag_id, source, score, auto_rank)
+                VALUES (%s, %s, 'AUTO', %s, %s)
+                ON CONFLICT (file_id, tag_id)
+                DO UPDATE SET
+                    source = EXCLUDED.source,
+                    score = EXCLUDED.score,
+                    auto_rank = EXCLUDED.auto_rank,
+                    updated_at = NOW()
+                """,
+                (file_id, tag_id, score, rank),
+            )
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -110,7 +200,7 @@ def mark_as_ready(conn: psycopg2.extensions.connection, file_id: int, tag: str) 
             SET tag = %s, status = 'READY', failure_cause = NULL
             WHERE id = %s
             """,
-            (tag, file_id),
+            (top1_tag, file_id),
         )
 
 
@@ -172,10 +262,18 @@ def process_message(
         return True
 
     try:
-        predicted_tag, score = tagger.predict(text)
+        predictions = tagger.predict_top_k(text, top_k=AUTO_TOP_K)
+        predicted_tag, score = predictions[0]
         logger.info(
             "Inference completed",
-            extra={**log_ctx, "predicted_tag": predicted_tag, "similarity_score": round(score, 4)},
+            extra={
+                **log_ctx,
+                "predicted_tag": predicted_tag,
+                "similarity_score": round(score, 4),
+                "top_predictions": [
+                    {"tag": tag, "score": round(tag_score, 4)} for tag, tag_score in predictions
+                ],
+            },
         )
     except Exception as err:  # noqa: BLE001
         logger.error("Inference failed", extra={**log_ctx, "error": str(err)})
@@ -197,7 +295,7 @@ def process_message(
     try:
         retry_with_backoff(
             "Postgres mark ready",
-            lambda: mark_as_ready(db_conn, file_id, predicted_tag),
+            lambda: mark_as_ready(db_conn, file_id, predictions),
         )
     except Exception as err:  # noqa: BLE001
         logger.error("Failed to persist classification result", extra={**log_ctx, "error": str(err)})

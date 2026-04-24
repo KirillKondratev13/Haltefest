@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reranker
+  labels:
+    app: reranker
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reranker
+  template:
+    metadata:
+      labels:
+        app: reranker
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: reranker
+          image: {{ printf "%s:%s" .Values.images.reranker.repository .Values.images.reranker.tag }}
+          imagePullPolicy: {{ .Values.images.reranker.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.reranker.port }}
+          env:
+            - name: RERANKER_MODEL_NAME
+              value: {{ .Values.reranker.modelName | quote }}
+            - name: RERANKER_DEVICE
+              value: {{ .Values.reranker.device | quote }}
+            - name: RERANKER_BATCH_SIZE
+              value: {{ .Values.reranker.batchSize | quote }}
+            - name: RERANKER_MAX_CANDIDATES
+              value: {{ .Values.reranker.maxCandidates | quote }}
+            - name: RERANKER_DEFAULT_TOP_K
+              value: {{ .Values.reranker.defaultTopK | quote }}
+          volumeMounts:
+            - name: embedding-model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: embedding-model-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reranker
+  labels:
+    app: reranker
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: reranker
+  ports:
+    - name: http
+      port: {{ .Values.reranker.port }}
+      targetPort: http

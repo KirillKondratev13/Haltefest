@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: indexer
+  labels:
+    app: indexer
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: indexer
+  template:
+    metadata:
+      labels:
+        app: indexer
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: indexer
+          image: {{ printf "%s:%s" .Values.images.indexer.repository .Values.images.indexer.tag }}
+          imagePullPolicy: {{ .Values.images.indexer.pullPolicy }}
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: DB_CONN_STR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: DB_CONN_STR
+            - name: FILER_URL
+              value: "http://seaweedfs-filer:8888"
+            - name: KAFKA_TEXT_TO_INDEX_TOPIC
+              value: {{ .Values.indexer.kafkaTopicTextToIndex | quote }}
+            - name: KAFKA_ANALYSIS_DLQ_TOPIC
+              value: {{ .Values.indexer.kafkaTopicDlq | quote }}
+            - name: KAFKA_CONSUMER_GROUP
+              value: {{ .Values.indexer.kafkaConsumerGroup | quote }}
+            - name: MAX_ATTEMPTS
+              value: {{ .Values.indexer.maxAttempts | quote }}
+            - name: QDRANT_URL
+              value: {{ .Values.indexer.qdrantUrl | quote }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.indexer.embeddingModel | quote }}
+            - name: EMBEDDING_MODEL_VERSION
+              value: {{ .Values.indexer.embeddingModelVersion | quote }}
+            - name: CHUNKING_VERSION
+              value: {{ .Values.indexer.chunkingVersion | quote }}
+          volumeMounts:
+            - name: embedding-model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: embedding-model-cache
+          emptyDir: {}

@@ -17,10 +17,11 @@ import (
 
 // FileHandler будет хранить зависимости: UserService, FileService (если нужно), и URL Filer'а.
 type FileHandler struct {
-	UserService *service.UserService
-	FileService *service.FileService
-	FilerURL    string
-	KafkaWriter KafkaWriter
+	UserService   *service.UserService
+	FileService   *service.FileService
+	FilerURL      string
+	KafkaWriter   KafkaWriter
+	SnapshotCache SnapshotCache
 }
 
 type filesToParseEvent struct {

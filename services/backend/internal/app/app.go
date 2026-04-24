@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Cyr1ll/golang-templ-htmx-app/internal/cache"
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/config"
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/handler"
 	"github.com/Cyr1ll/golang-templ-htmx-app/internal/service" // Импортируем service
@@ -69,17 +70,24 @@ func Run(ctx context.Context) error {
 
 	kp := &kafkaProducer{writer: kafkaWriter}
 
+	var snapshotCache handler.SnapshotCache
+	if strings.TrimSpace(cfg.DragonflyAddr) != "" {
+		snapshotCache = cache.NewDragonflyClient(cfg.DragonflyAddr, cfg.DragonflyPassword)
+		slog.Info("dragonfly snapshot cache enabled", slog.String("addr", cfg.DragonflyAddr))
+	}
+
 	relay := newOutboxRelay(dbpool, cfg.KafkaBrokers)
 	defer relay.Close()
 	go relay.Run(ctx)
 
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r, handler.Dependencies{
-		AssetsFS:    http.Dir(cfg.AssetsDir),
-		UserService: userService,
-		FileService: fileService,
-		Config:      cfg,
-		KafkaWriter: kp,
+		AssetsFS:      http.Dir(cfg.AssetsDir),
+		UserService:   userService,
+		FileService:   fileService,
+		Config:        cfg,
+		KafkaWriter:   kp,
+		SnapshotCache: snapshotCache,
 	})
 
 	s := http.Server{

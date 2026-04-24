@@ -1,0 +1,44 @@
+sharedSecret:
+  name: haltefest-shared-secrets
+  postgresUser: myappuser
+  postgresPassword: mypassword
+  postgresDatabase: myapp
+  dbConnStr: ""
+  gigachatAuthKey: ""
+  gigachatClientId: ""
+  gigachatClientSecret: ""
+
+infra:
+  postgres:
+    image: postgres:15
+    port: 5432
+  dragonfly:
+    image: dragonflydb/dragonfly:v1.27.1
+    port: 6379
+  kafka:
+    image: apache/kafka:latest
+    port: 9092
+    controllerPort: 9093
+    topics:
+      - files-to-parse
+      - text-to-classify
+      - text-to-index
+      - analysis-requested
+      - analysis-dlq
+      - chat-requested
+      - chat-dlq
+  seaweedfs:
+    image: chrislusf/seaweedfs
+    masterPort: 9333
+    volumePort: 8080
+    filerPort: 8888
+  qdrant:
+    image: qdrant/qdrant
+    httpPort: 6333
+    grpcPort: 6334
+  ollama:
+    image: ollama/ollama:0.20.2
+    port: 11434
+    preferredModels:
+      - qwen2.5:0.5b
+      - qwen2.5:1.5b

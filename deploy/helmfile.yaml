@@ -1,0 +1,19 @@
+helmDefaults:
+  wait: true
+  timeout: 900
+  createNamespace: true
+
+releases:
+  - name: haltefest-infra
+    namespace: haltefest
+    chart: ./charts/haltefest-infra
+    values:
+      - ./values/infra.yaml
+
+  - name: haltefest-app
+    namespace: haltefest
+    chart: ./charts/haltefest-app
+    needs:
+      - haltefest/haltefest-infra
+    values:
+      - ./values/app.yaml

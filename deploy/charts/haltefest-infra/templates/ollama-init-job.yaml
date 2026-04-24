@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-weight": "10"
+  labels:
+    app: ollama-init
+    app.kubernetes.io/part-of: haltefest
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: ollama-init
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: ollama-init
+          image: {{ .Values.infra.ollama.image }}
+          env:
+            - name: OLLAMA_HOST
+              value: http://ollama:{{ .Values.infra.ollama.port }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              echo 'Waiting for Ollama to be ready...'
+              until ollama list > /dev/null 2>&1; do
+                sleep 2
+              done
+
+              echo 'Trying to pull preferred models...'
+{{- range .Values.infra.ollama.preferredModels }}
+              echo "Pulling {{ . }} ..."
+              if ollama pull '{{ . }}'; then
+                echo "Model pulled successfully: {{ . }}"
+                exit 0
+              fi
+{{- end }}
+
+              echo 'Failed to pull any preferred model' >&2
+              exit 1

@@ -24,16 +24,25 @@ type FileData struct {
 }
 
 type FileJSON struct {
-	ID           int    `json:"ID"`
-	FileName     string `json:"FileName"`
-	FileType     string `json:"FileType"`
-	FileSize     int64  `json:"FileSize"`
-	CreatedAt    string `json:"CreatedAt"`
-	DownloadURL  string `json:"DownloadURL"`
-	DeleteURL    string `json:"DeleteURL"`
-	Status       string `json:"Status"`
-	Tag          string `json:"Tag"`
-	FailureCause string `json:"FailureCause"`
+	ID           int           `json:"ID"`
+	FileName     string        `json:"FileName"`
+	FileType     string        `json:"FileType"`
+	FileSize     int64         `json:"FileSize"`
+	CreatedAt    string        `json:"CreatedAt"`
+	DownloadURL  string        `json:"DownloadURL"`
+	DeleteURL    string        `json:"DeleteURL"`
+	Status       string        `json:"Status"`
+	Tag          string        `json:"Tag"`
+	FailureCause string        `json:"FailureCause"`
+	Tags         []FileTagJSON `json:"Tags"`
+}
+
+type FileTagJSON struct {
+	TagID       int64    `json:"tag_id"`
+	DisplayName string   `json:"display_name"`
+	Source      string   `json:"source"`
+	AutoRank    *int16   `json:"auto_rank,omitempty"`
+	Score       *float64 `json:"score,omitempty"`
 }
 
 type AuthHandler struct {
@@ -200,6 +209,63 @@ func (h *AuthHandler) handlePreferences(w http.ResponseWriter, r *http.Request) 
 	)
 }
 
+func (h *AuthHandler) handleGallery(w http.ResponseWriter, r *http.Request) error {
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return nil
+	}
+
+	return layout.Base(layout.BaseProps{
+		Title: "Gallery",
+		User:  user,
+	}).Render(
+		templ.WithChildren(r.Context(), templ.ComponentFunc(func(_ context.Context, writer io.Writer) error {
+			_, err := io.WriteString(writer, `<main><div id="gallery-page-root" class="w-full max-w-6xl mx-auto mt-4 px-4"></div></main>`)
+			return err
+		})),
+		w,
+	)
+}
+
+func (h *AuthHandler) handleLeaderboard(w http.ResponseWriter, r *http.Request) error {
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return nil
+	}
+
+	return layout.Base(layout.BaseProps{
+		Title: "Leaderboard",
+		User:  user,
+	}).Render(
+		templ.WithChildren(r.Context(), templ.ComponentFunc(func(_ context.Context, writer io.Writer) error {
+			_, err := io.WriteString(writer, `<main><div id="leaderboard-page-root" class="w-full max-w-6xl mx-auto mt-4 px-4"></div></main>`)
+			return err
+		})),
+		w,
+	)
+}
+
+func (h *AuthHandler) handleGalleryGraph(w http.ResponseWriter, r *http.Request) error {
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return nil
+	}
+
+	return layout.Base(layout.BaseProps{
+		Title: "Graph Viewer",
+		User:  user,
+	}).Render(
+		templ.WithChildren(r.Context(), templ.ComponentFunc(func(_ context.Context, writer io.Writer) error {
+			_, err := io.WriteString(writer, `<main><div id="gallery-graph-page-root" class="w-full max-w-6xl mx-auto mt-4 px-4"></div></main>`)
+			return err
+		})),
+		w,
+	)
+}
+
 func (h *AuthHandler) handleProfileFilesData(w http.ResponseWriter, r *http.Request) error {
 	user := getUserFromContext(r)
 	if user == nil {
@@ -225,8 +291,51 @@ func (h *AuthHandler) buildFileData(ctx context.Context, user *service.User) ([]
 		return nil, FileData{}, err
 	}
 
+	tagsByFileID := make(map[int][]FileTagJSON, len(files))
+	rows, err := h.FileService.DB.Query(ctx, `
+		SELECT
+			ft.file_id,
+			t.id,
+			t.display_name,
+			ft.source,
+			ft.auto_rank,
+			ft.score
+		FROM file_tags ft
+		JOIN tags t ON t.id = ft.tag_id
+		JOIN files f ON f.id = ft.file_id
+		WHERE f.user_id = $1
+		ORDER BY ft.file_id ASC, ft.source ASC, ft.auto_rank ASC NULLS LAST, t.display_name ASC
+	`, user.ID)
+	if err != nil {
+		return nil, FileData{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var fileID int
+		var tag FileTagJSON
+		if err := rows.Scan(&fileID, &tag.TagID, &tag.DisplayName, &tag.Source, &tag.AutoRank, &tag.Score); err != nil {
+			return nil, FileData{}, err
+		}
+		tagsByFileID[fileID] = append(tagsByFileID[fileID], tag)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, FileData{}, err
+	}
+
 	filesJSON := make([]FileJSON, 0, len(files))
 	for _, f := range files {
+		tags := tagsByFileID[f.ID]
+		tag := stringFromPtr(f.Tag)
+		if tag == "" {
+			for _, item := range tags {
+				if item.Source == "AUTO" && item.AutoRank != nil && *item.AutoRank == 1 {
+					tag = item.DisplayName
+					break
+				}
+			}
+		}
+
 		filesJSON = append(filesJSON, FileJSON{
 			ID:           f.ID,
 			FileName:     f.FileName,
@@ -236,8 +345,9 @@ func (h *AuthHandler) buildFileData(ctx context.Context, user *service.User) ([]
 			DownloadURL:  fmt.Sprintf("/profile/files/download?file_id=%d", f.ID),
 			DeleteURL:    fmt.Sprintf("/profile/files/delete?file_id=%d", f.ID),
 			Status:       stringFromPtr(f.Status),
-			Tag:          stringFromPtr(f.Tag),
+			Tag:          tag,
 			FailureCause: stringFromPtr(f.FailureCause),
+			Tags:         tags,
 		})
 	}
 

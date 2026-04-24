@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: ollama
+          image: {{ .Values.infra.ollama.image }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.infra.ollama.port }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+      volumes:
+        - name: ollama-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  labels:
+    app: ollama
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: {{ .Values.infra.ollama.port }}
+      targetPort: http

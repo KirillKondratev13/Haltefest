@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml
+  labels:
+    app: ml
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ml
+  template:
+    metadata:
+      labels:
+        app: ml
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: ml
+          image: {{ printf "%s:%s" .Values.images.ml.repository .Values.images.ml.tag }}
+          imagePullPolicy: {{ .Values.images.ml.pullPolicy }}
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: REDIS_URL
+              value: "redis://dragonfly:6379"
+            - name: DB_CONN_STR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: DB_CONN_STR
+            - name: TAGS_FILE
+              value: "/app/tags.txt"
+            - name: MODEL_NAME
+              value: {{ .Values.ml.modelName | quote }}
+          volumeMounts:
+            - name: ml-model-cache
+              mountPath: /app/model_cache
+      volumes:
+        - name: ml-model-cache
+          emptyDir: {}

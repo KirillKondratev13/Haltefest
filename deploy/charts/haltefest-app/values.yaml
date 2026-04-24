@@ -1,0 +1,99 @@
+sharedSecretName: haltefest-shared-secrets
+
+ingress:
+  enabled: true
+  className: nginx
+  host: haltefest.local
+  path: /
+  pathType: Prefix
+
+images:
+  backend:
+    repository: haltefest/backend
+    tag: dev
+    pullPolicy: IfNotPresent
+  parser:
+    repository: haltefest/parser
+    tag: dev
+    pullPolicy: IfNotPresent
+  ml:
+    repository: haltefest/ml
+    tag: dev
+    pullPolicy: IfNotPresent
+  indexer:
+    repository: haltefest/indexer
+    tag: dev
+    pullPolicy: IfNotPresent
+  llmAnalysis:
+    repository: haltefest/llm-analysis
+    tag: dev
+    pullPolicy: IfNotPresent
+  reranker:
+    repository: haltefest/reranker
+    tag: dev
+    pullPolicy: IfNotPresent
+
+backend:
+  port: 8081
+
+reranker:
+  port: 8090
+  modelName: BAAI/bge-reranker-v2-m3
+  device: cpu
+  batchSize: "16"
+  maxCandidates: "200"
+  defaultTopK: "40"
+
+ml:
+  modelName: chandar-lab/NeoBERT
+
+indexer:
+  kafkaTopicTextToIndex: text-to-index
+  kafkaTopicDlq: analysis-dlq
+  kafkaConsumerGroup: indexer_service_group
+  maxAttempts: "6"
+  qdrantUrl: http://qdrant:6333
+  embeddingModel: BAAI/bge-small-en-v1.5
+  embeddingModelVersion: bge-small-en-v1.5
+  chunkingVersion: chunking-v1
+
+llmAnalysis:
+  kafkaAnalysisRequestedTopic: analysis-requested
+  kafkaAnalysisDlqTopic: analysis-dlq
+  kafkaChatRequestedTopic: chat-requested
+  kafkaChatDlqTopic: chat-dlq
+  kafkaConsumerGroup: llm_analysis_group
+  maxAttempts: "6"
+  llmTimeoutSeconds: "120"
+  llmModelName: qwen2.5:0.5b
+  llmModelVersion: qwen2.5-0.5b
+  promptVersion: analysis-v1
+  ollamaUrl: http://ollama:11434
+  qdrantUrl: http://qdrant:6333
+  llmModel: qwen2.5:0.5b
+  llmModelFallbacks: qwen2.5:1.5b
+  ollamaNumCtx: "4096"
+  gigachatAuthUrl: https://ngw.devices.sberbank.ru:9443/api/v2/oauth
+  gigachatApiUrl: https://gigachat.devices.sberbank.ru/api/v1
+  gigachatScope: GIGACHAT_API_PERS
+  gigachatModel: GigaChat
+  gigachatTimeoutSeconds: "120"
+  gigachatVerifySsl: "false"
+  gigachatTokenRefreshSkewSeconds: "60"
+  docChatEmbeddingModel: BAAI/bge-small-en-v1.5
+  docChatSemanticTopK: "10"
+  docChatBm25TopK: "10"
+  docChatRrfK: "60"
+  docChatHybridFusedLimit: "40"
+  docChatBm25PageSize: "256"
+  docChatBm25MaxChunks: "3000"
+  rerankerUrl: http://reranker:8090
+  rerankerTimeoutSeconds: "60"
+  docChatRerankTopK: "20"
+  docChatModelContextWindowTokens: "32000"
+  docChatSingleDocThresholdTokens: "0"
+  docChatReservedSystemTokens: "400"
+  docChatReservedHistoryTokens: "0"
+  docChatReservedOutputTokens: "700"
+  docChatSafetyMarginTokens: "300"
+  docChatContextMaxChars: "18000"

@@ -1,5 +1,11 @@
 import 'htmx.org'
-import { updateUserGraph } from './graph'
+import {
+	getGraphTopN,
+	setGraphInteractionMode,
+	setGraphTopN,
+	setShowTagProbabilities,
+	updateUserGraph,
+} from './graph'
 
 const FILES_DATA_URL = '/profile/files/data'
 const PREFERENCES_API_URL = '/api/preferences'
@@ -14,6 +20,9 @@ const CHAT_SCOPE_ALL = 'all-docs'
 const CHAT_PROVIDER_LOCAL = 'local'
 const CHAT_PROVIDER_GIGACHAT = 'gigachat'
 const PREFERENCES_PAGE_PATH = '/preferences'
+const GALLERY_PAGE_PATH = '/gallery'
+const LEADERBOARD_PAGE_PATH = '/leaderboard'
+const GALLERY_GRAPH_PAGE_PREFIX = '/gallery/graphs/'
 
 let refreshInFlight = false
 let pollingId = null
@@ -73,12 +82,47 @@ const preferencesState = {
 	loaded: false,
 	loading: false,
 	saving: false,
+	snapshotRefreshing: false,
 	error: '',
 	success: '',
 	summaryProvider: CHAT_PROVIDER_LOCAL,
 	chaptersProvider: CHAT_PROVIDER_LOCAL,
 	flashcardsProvider: CHAT_PROVIDER_LOCAL,
 	chatDefaultProvider: CHAT_PROVIDER_LOCAL,
+	showTagProbabilities: false,
+	galleryVisibility: 'private',
+	gallerySnapshotUpdatedAt: '',
+}
+
+const tagEditorState = {
+	openFileId: null,
+	autoTagIds: [],
+	manualTags: [],
+	manualInput: '',
+	saving: false,
+	error: '',
+}
+
+const galleryPageState = {
+	loading: false,
+	error: '',
+	metric: 'cosine',
+	items: [],
+}
+
+const leaderboardPageState = {
+	loading: false,
+	error: '',
+	period: 'week',
+	items: [],
+}
+
+const galleryGraphPageState = {
+	loading: false,
+	error: '',
+	ownerUserId: 0,
+	metric: 'cosine',
+	detail: null,
 }
 
 function analysisStartUrl(fileId) {
@@ -105,9 +149,56 @@ function preferencesApiUrl() {
 	return PREFERENCES_API_URL
 }
 
+function gallerySnapshotRefreshApiUrl() {
+	return '/api/preferences/gallery-snapshot:refresh'
+}
+
+function fileTagsApiUrl(fileId) {
+	return `/api/files/${encodeURIComponent(fileId)}/tags`
+}
+
+function galleryGraphsApiUrl() {
+	return '/api/gallery/graphs'
+}
+
+function leaderboardApiUrl() {
+	return '/api/leaderboard/graphs'
+}
+
 function isPreferencesPage() {
 	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
 	return normalized === PREFERENCES_PAGE_PATH
+}
+
+function isGalleryPage() {
+	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
+	return normalized === GALLERY_PAGE_PATH
+}
+
+function isLeaderboardPage() {
+	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
+	return normalized === LEADERBOARD_PAGE_PATH
+}
+
+function isGalleryGraphPage() {
+	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
+	return normalized.startsWith(GALLERY_GRAPH_PAGE_PREFIX)
+}
+
+function getGalleryGraphPageOwnerUserId() {
+	const normalized = String(window.location.pathname || '').replace(/\/+$/, '')
+	if (!normalized.startsWith(GALLERY_GRAPH_PAGE_PREFIX)) return 0
+	const ownerRaw = normalized.slice(GALLERY_GRAPH_PAGE_PREFIX.length)
+	const ownerUserId = Number(ownerRaw)
+	if (!Number.isInteger(ownerUserId) || ownerUserId <= 0) return 0
+	return ownerUserId
+}
+
+function getGalleryMetricFromQueryOrDefault() {
+	const params = new URLSearchParams(window.location.search || '')
+	return String(params.get('metric') || '').toLowerCase() === 'weighted_jaccard'
+		? 'weighted_jaccard'
+		: 'cosine'
 }
 
 function analysisTypeLabel(analysisType) {
@@ -194,6 +285,7 @@ function getFileSignature(file) {
 		file.FileType || '',
 		file.Status || '',
 		file.Tag || '',
+		JSON.stringify(file.Tags || []),
 		file.FailureCause || '',
 		file.DownloadURL || '',
 		file.DeleteURL || '',
@@ -303,6 +395,153 @@ function statusBadge(status) {
 	}
 }
 
+function normalizeFileTagsForUI(file) {
+	const tags = Array.isArray(file?.Tags) ? file.Tags : []
+	return tags
+		.map(tag => ({
+			tagId: Number(tag?.tag_id || 0),
+			displayName: String(tag?.display_name || '').trim(),
+			source: String(tag?.source || '').toUpperCase(),
+			autoRank: Number(tag?.auto_rank || 0),
+		}))
+		.filter(tag => tag.tagId > 0 && tag.displayName)
+}
+
+function getAutoCatalog(files) {
+	const map = new Map()
+	for (const file of files) {
+		const tags = normalizeFileTagsForUI(file)
+		for (const tag of tags) {
+			if (tag.source !== 'AUTO') continue
+			if (!map.has(tag.tagId)) {
+				map.set(tag.tagId, tag.displayName)
+			}
+		}
+	}
+	return [...map.entries()]
+		.map(([tagId, displayName]) => ({ tagId, displayName }))
+		.sort((left, right) => left.displayName.localeCompare(right.displayName))
+}
+
+function getFileById(fileId) {
+	const normalizedId = normalizeFileId(fileId)
+	if (!normalizedId) return null
+	const files = Array.isArray(lastFilesData) ? lastFilesData : []
+	return files.find(file => Number(file.ID) === normalizedId) || null
+}
+
+function openTagEditor(fileId) {
+	const file = getFileById(fileId)
+	if (!file) return
+
+	const tags = normalizeFileTagsForUI(file)
+	const autoTags = tags
+		.filter(tag => tag.source === 'AUTO')
+		.sort((left, right) => left.autoRank - right.autoRank)
+	const manualTags = tags
+		.filter(tag => tag.source === 'MANUAL')
+		.map(tag => tag.displayName)
+
+	tagEditorState.openFileId = Number(file.ID)
+	tagEditorState.autoTagIds = autoTags.map(tag => tag.tagId)
+	tagEditorState.manualTags = manualTags
+	tagEditorState.manualInput = ''
+	tagEditorState.saving = false
+	tagEditorState.error = ''
+	renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+}
+
+function closeTagEditor() {
+	tagEditorState.openFileId = null
+	tagEditorState.autoTagIds = []
+	tagEditorState.manualTags = []
+	tagEditorState.manualInput = ''
+	tagEditorState.saving = false
+	tagEditorState.error = ''
+	renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+}
+
+function normalizeManualTagInput(value) {
+	return String(value || '')
+		.trim()
+		.replace(/\s+/g, ' ')
+}
+
+function addManualTagToEditor() {
+	const normalized = normalizeManualTagInput(tagEditorState.manualInput)
+	if (!normalized) {
+		tagEditorState.error = 'Введите manual tag'
+		renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+		return
+	}
+	if (normalized.length > 15) {
+		tagEditorState.error = 'Manual tag должен быть не длиннее 15 символов'
+		renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+		return
+	}
+	const duplicate = tagEditorState.manualTags.some(
+		tag => tag.toLowerCase() === normalized.toLowerCase()
+	)
+	if (duplicate) {
+		tagEditorState.error = 'Такой manual tag уже есть'
+		renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+		return
+	}
+	if (tagEditorState.autoTagIds.length + tagEditorState.manualTags.length >= 10) {
+		tagEditorState.error = 'Лимит тегов на файл: 10'
+		renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+		return
+	}
+	tagEditorState.manualTags.push(normalized)
+	tagEditorState.manualInput = ''
+	tagEditorState.error = ''
+	renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+}
+
+function toggleAutoTagInEditor(tagId) {
+	const normalizedId = Number(tagId)
+	if (!Number.isInteger(normalizedId) || normalizedId <= 0) return
+	const current = new Set(tagEditorState.autoTagIds)
+	if (current.has(normalizedId)) {
+		current.delete(normalizedId)
+	} else {
+		if (current.size >= 5) {
+			tagEditorState.error = 'Лимит auto tag: 5'
+			renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+			return
+		}
+		if (current.size + tagEditorState.manualTags.length >= 10) {
+			tagEditorState.error = 'Лимит тегов на файл: 10'
+			renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+			return
+		}
+		current.add(normalizedId)
+	}
+	tagEditorState.autoTagIds = [...current]
+	tagEditorState.error = ''
+	renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+}
+
+function renderTagBadges(file) {
+	const tags = normalizeFileTagsForUI(file)
+	if (!tags.length) return '<span class="text-xs opacity-60">-</span>'
+
+	const sorted = [...tags].sort((left, right) => {
+		if (left.source !== right.source) {
+			return left.source === 'AUTO' ? -1 : 1
+		}
+		return left.autoRank - right.autoRank
+	})
+
+	return sorted
+		.map(tag => {
+			const badgeClass = tag.source === 'AUTO' ? 'badge-info' : 'badge-accent'
+			const suffix = tag.source === 'AUTO' && tag.autoRank > 0 ? ` #${tag.autoRank}` : ''
+			return `<span class="badge badge-sm ${badgeClass} mr-1 mb-1">${escapeHtml(tag.displayName)}${suffix}</span>`
+		})
+		.join('')
+}
+
 function renderFilesTable(files) {
 	const container = ensureFilesTableContainer()
 	if (!container) return
@@ -320,9 +559,90 @@ function renderFilesTable(files) {
 			const createdAt = escapeHtml(file.CreatedAt || '')
 			const tag = escapeHtml(file.Tag || '-')
 			const failureCause = escapeHtml(file.FailureCause || '-')
+			const tagsBadges = renderTagBadges(file)
 			const size = formatBytes(file.FileSize)
 			const downloadUrl = escapeHtml(file.DownloadURL || '#')
 			const deleteUrl = escapeHtml(file.DeleteURL || '#')
+			const fileId = Number(file.ID)
+			const isEditing = Number(tagEditorState.openFileId) === fileId
+			const autoCatalog = getAutoCatalog(files)
+
+			const editorHtml = isEditing
+				? `
+                    <tr>
+                        <td colspan="9" class="bg-base-200">
+                            <div class="p-3 border border-base-300 rounded-md bg-base-100">
+                                <div class="flex flex-wrap items-center gap-2 mb-3">
+                                    <span class="font-medium text-sm">Edit tags:</span>
+                                    <span class="text-sm">${fileName}</span>
+                                    <span class="text-xs opacity-70">auto <=5, total <=10, manual <=15 chars</span>
+                                </div>
+                                ${tagEditorState.error ? `<p class="text-error text-sm mb-2">${escapeHtml(tagEditorState.error)}</p>` : ''}
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <h4 class="text-sm font-semibold mb-2">Auto tags</h4>
+                                        ${
+																					autoCatalog.length
+																						? `<div class="space-y-1 max-h-48 overflow-y-auto">
+                                            ${autoCatalog
+																							.map(item => {
+																								const checked = tagEditorState.autoTagIds.includes(item.tagId)
+																								return `<label class="label cursor-pointer justify-start gap-2 py-1">
+                                                    <input type="checkbox" class="checkbox checkbox-sm" data-tag-editor-auto-id="${item.tagId}" ${checked ? 'checked' : ''} />
+                                                    <span class="label-text">${escapeHtml(item.displayName)}</span>
+                                                </label>`
+																							})
+																							.join('')}
+                                        </div>`
+																						: '<p class="text-sm opacity-70">Auto tags not found</p>'
+																				}
+                                    </div>
+                                    <div>
+                                        <h4 class="text-sm font-semibold mb-2">Manual tags</h4>
+                                        <div class="mb-2">
+                                            ${
+																							tagEditorState.manualTags.length
+																								? tagEditorState.manualTags
+																										.map(
+																											(manualTag, index) =>
+																												`<span class="badge badge-accent badge-sm mr-1 mb-1">
+                                                        ${escapeHtml(manualTag)}
+                                                        <button class="ml-1" type="button" data-tag-editor-remove-manual="${index}" title="Remove">x</button>
+                                                    </span>`
+																										)
+																										.join('')
+																								: '<span class="text-sm opacity-70">No manual tags</span>'
+																						}
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <input
+                                                type="text"
+                                                class="input input-sm input-bordered w-full"
+                                                placeholder="manual tag"
+                                                maxlength="15"
+                                                value="${escapeHtml(tagEditorState.manualInput)}"
+                                                data-tag-editor-manual-input
+                                            />
+                                            <button class="btn btn-sm btn-outline" type="button" data-tag-editor-add-manual>Add</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mt-3 flex gap-2">
+                                    <button
+                                        class="btn btn-sm btn-primary"
+                                        type="button"
+                                        data-tag-editor-save
+                                        ${tagEditorState.saving ? 'disabled' : ''}
+                                    >
+                                        ${tagEditorState.saving ? 'Saving...' : 'Save'}
+                                    </button>
+                                    <button class="btn btn-sm btn-ghost" type="button" data-tag-editor-cancel>Cancel</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `
+				: ''
 
 			return `
                 <tr class="hover">
@@ -332,12 +652,15 @@ function renderFilesTable(files) {
                     <td>${createdAt}</td>
                     <td>${statusBadge(file.Status)}</td>
                     <td class="max-w-[160px] truncate" title="${tag}">${tag}</td>
+                    <td class="max-w-[260px]">${tagsBadges}</td>
                     <td class="max-w-[280px] truncate" title="${failureCause}">${failureCause}</td>
                     <td class="whitespace-nowrap">
                         <a class="link link-primary mr-2" href="${downloadUrl}">download</a>
                         <button class="link link-error" type="button" data-file-delete-url="${deleteUrl}">delete</button>
+                        <button class="link link-secondary ml-2" type="button" data-file-tags-edit="${fileId}">edit tags</button>
                     </td>
                 </tr>
+                ${editorHtml}
             `
 		})
 		.join('')
@@ -352,7 +675,8 @@ function renderFilesTable(files) {
                         <th>Size</th>
                         <th>Created</th>
                         <th>Status</th>
-                        <th>Tag</th>
+                        <th>Top Tag</th>
+                        <th>Tags</th>
                         <th>Failure Cause</th>
                         <th>Actions</th>
                     </tr>
@@ -663,7 +987,43 @@ function renderPreferencesPanel() {
                 </label>
             </div>
 
-            <div class="mt-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                <label class="form-control">
+                    <span class="label cursor-pointer justify-start gap-2">
+                        <input
+                            class="checkbox checkbox-sm"
+                            type="checkbox"
+                            data-pref-show-tag-probabilities
+                            ${preferencesState.showTagProbabilities ? 'checked' : ''}
+                        />
+                        <span class="label-text text-sm">Show tag probabilities</span>
+                    </span>
+                </label>
+                <label class="form-control">
+                    <span class="label-text text-xs mb-1">Gallery visibility</span>
+                    <select class="select select-sm select-bordered w-full" data-pref-gallery-visibility>
+                        <option value="private" ${preferencesState.galleryVisibility === 'private' ? 'selected' : ''}>Private</option>
+                        <option value="public" ${preferencesState.galleryVisibility === 'public' ? 'selected' : ''}>Public</option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="mt-3 text-xs opacity-75">
+                Snapshot updated:
+                <span class="font-medium">
+                    ${
+											preferencesState.gallerySnapshotUpdatedAt
+												? escapeHtml(
+														formatApiTimestamp(
+															preferencesState.gallerySnapshotUpdatedAt
+														)
+													)
+												: 'not generated'
+										}
+                </span>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center gap-2">
                 <button
                     class="btn btn-primary btn-sm"
                     type="button"
@@ -671,6 +1031,19 @@ function renderPreferencesPanel() {
                     ${preferencesState.saving ? 'disabled' : ''}
                 >
                     ${preferencesState.saving ? 'Saving...' : 'Save Preferences'}
+                </button>
+                <button
+                    class="btn btn-outline btn-sm"
+                    type="button"
+                    data-pref-refresh-snapshot
+                    ${
+											preferencesState.snapshotRefreshing ||
+											preferencesState.galleryVisibility !== 'public'
+												? 'disabled'
+												: ''
+										}
+                >
+                    ${preferencesState.snapshotRefreshing ? 'Refreshing...' : 'Refresh Snapshot'}
                 </button>
             </div>
         </div>
@@ -730,6 +1103,9 @@ async function savePreferences() {
 		chat_default_provider: normalizeChatProviderValue(
 			preferencesState.chatDefaultProvider
 		),
+		show_tag_probabilities: Boolean(preferencesState.showTagProbabilities),
+		gallery_visibility:
+			preferencesState.galleryVisibility === 'public' ? 'public' : 'private',
 	}
 
 	try {
@@ -762,6 +1138,36 @@ async function savePreferences() {
 	}
 }
 
+async function refreshGallerySnapshot() {
+	if (preferencesState.snapshotRefreshing) return
+
+	preferencesState.snapshotRefreshing = true
+	preferencesState.error = ''
+	preferencesState.success = ''
+	renderPreferencesPanel()
+
+	try {
+		const response = await fetch(gallerySnapshotRefreshApiUrl(), {
+			method: 'POST',
+			headers: { Accept: 'application/json' },
+		})
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Failed to refresh snapshot'))
+		}
+		const payload = await response.json()
+		applyPreferences(payload)
+		preferencesState.success = 'Snapshot refreshed'
+	} catch (err) {
+		preferencesState.error = normalizeApiError(
+			err?.message,
+			'Failed to refresh snapshot'
+		)
+	} finally {
+		preferencesState.snapshotRefreshing = false
+		renderPreferencesPanel()
+	}
+}
+
 function normalizeChatScopeValue(value) {
 	const normalized = String(value || '').trim().toLowerCase()
 	if (
@@ -781,11 +1187,18 @@ function normalizeChatProviderValue(value) {
 }
 
 function normalizePreferencesPayload(raw) {
+	const galleryVisibility =
+		String(raw?.gallery_visibility || '').trim().toLowerCase() === 'public'
+			? 'public'
+			: 'private'
 	return {
 		summaryProvider: normalizeChatProviderValue(raw?.summary_provider),
 		chaptersProvider: normalizeChatProviderValue(raw?.chapters_provider),
 		flashcardsProvider: normalizeChatProviderValue(raw?.flashcards_provider),
 		chatDefaultProvider: normalizeChatProviderValue(raw?.chat_default_provider),
+		showTagProbabilities: Boolean(raw?.show_tag_probabilities),
+		galleryVisibility,
+		gallerySnapshotUpdatedAt: String(raw?.gallery_snapshot_updated_at || ''),
 	}
 }
 
@@ -795,7 +1208,14 @@ function applyPreferences(prefs) {
 	preferencesState.chaptersProvider = normalized.chaptersProvider
 	preferencesState.flashcardsProvider = normalized.flashcardsProvider
 	preferencesState.chatDefaultProvider = normalized.chatDefaultProvider
+	preferencesState.showTagProbabilities = normalized.showTagProbabilities
+	preferencesState.galleryVisibility = normalized.galleryVisibility
+	preferencesState.gallerySnapshotUpdatedAt = normalized.gallerySnapshotUpdatedAt
 	preferencesState.loaded = true
+
+	if (setShowTagProbabilities(normalized.showTagProbabilities)) {
+		updateUserGraph(lastUsername || 'User', lastFilesData || [])
+	}
 }
 
 function applyPreferencesToDraftProvider() {
@@ -1701,6 +2121,366 @@ function setupChatActions() {
 	})
 }
 
+function ensureGraphControlsRoot() {
+	const graphContainer = document.getElementById('graph-container')
+	if (!graphContainer || !graphContainer.parentElement) return null
+
+	let root = document.getElementById('graph-controls-root')
+	if (root) return root
+
+	root = document.createElement('section')
+	root.id = 'graph-controls-root'
+	root.className = 'w-full max-w-6xl mx-auto px-4 mb-2'
+	graphContainer.parentElement.insertBefore(root, graphContainer)
+	return root
+}
+
+function renderGraphControls() {
+	const root = ensureGraphControlsRoot()
+	if (!root) return
+
+	const topN = getGraphTopN()
+	const options = Array.from({ length: 10 }, (_, index) => index + 1)
+		.map(
+			value =>
+				`<option value="${value}" ${value === topN ? 'selected' : ''}>${value}</option>`
+		)
+		.join('')
+
+	root.innerHTML = `
+        <div class=\"border border-base-300 rounded-lg bg-base-100 text-base-content shadow-sm p-3\">
+            <div class=\"flex flex-wrap items-center gap-3\">
+                <span class=\"text-sm font-medium\">Graph Auto Tags</span>
+                <label class=\"text-sm opacity-80\">Top-N:</label>
+                <select class=\"select select-sm select-bordered w-24\" data-graph-top-n>
+                    ${options}
+                </select>
+                <span class=\"text-xs opacity-70\">Session only</span>
+            </div>
+        </div>
+    `
+}
+
+function ensureGalleryPageRoot() {
+	return document.getElementById('gallery-page-root')
+}
+
+function ensureLeaderboardPageRoot() {
+	return document.getElementById('leaderboard-page-root')
+}
+
+function ensureGalleryGraphPageRoot() {
+	return document.getElementById('gallery-graph-page-root')
+}
+
+function galleryGraphDetailApiUrl(ownerUserId, metric) {
+	return `/api/gallery/graphs/${encodeURIComponent(ownerUserId)}?metric=${encodeURIComponent(metric)}`
+}
+
+function galleryGraphPageUrl(ownerUserId, metric = 'cosine') {
+	const normalizedMetric =
+		String(metric || '').toLowerCase() === 'weighted_jaccard'
+			? 'weighted_jaccard'
+			: 'cosine'
+	return `/gallery/graphs/${encodeURIComponent(ownerUserId)}?metric=${encodeURIComponent(normalizedMetric)}`
+}
+
+function normalizeGalleryFileForGraph(file, ownerUserId = 0) {
+	const fileId = Number(file?.file_id || 0)
+	const tags = Array.isArray(file?.tags)
+		? file.tags.map(tag => ({
+				tag_id: Number(tag?.tag_id || 0),
+				display_name: String(tag?.display_name || '').trim(),
+				source: String(tag?.source || '').toUpperCase(),
+				auto_rank: Number(tag?.auto_rank || 0) || null,
+				score: Number.isFinite(Number(tag?.score)) ? Number(tag?.score) : null,
+			}))
+		: []
+
+	return {
+		ID: fileId,
+		FileName: String(file?.file_name || ''),
+		FileType: 'application/pdf',
+		FileSize: 0,
+		CreatedAt: String(file?.created_at || ''),
+		DownloadURL:
+			ownerUserId > 0 && fileId > 0
+				? `/api/gallery/graphs/${encodeURIComponent(ownerUserId)}/files/${encodeURIComponent(fileId)}/download`
+				: '',
+		DeleteURL: '',
+		Status: String(file?.status || ''),
+		Tag: String(file?.top_tag || ''),
+		FailureCause: '',
+		Tags: tags,
+	}
+}
+
+function renderGalleryGraphPage() {
+	const root = ensureGalleryGraphPageRoot()
+	if (!root) return
+	setGraphInteractionMode('readonly')
+
+	const metric = galleryGraphPageState.metric === 'weighted_jaccard'
+		? 'weighted_jaccard'
+		: 'cosine'
+	const detail = galleryGraphPageState.detail
+
+	let bodyHtml = ''
+	if (galleryGraphPageState.loading) {
+		bodyHtml = '<p class="text-sm opacity-70">Loading graph...</p>'
+	} else if (galleryGraphPageState.error) {
+		bodyHtml = `<p class="text-sm text-error">${escapeHtml(galleryGraphPageState.error)}</p>`
+	} else if (!detail) {
+		bodyHtml = '<p class="text-sm opacity-70">Graph not found.</p>'
+	} else {
+		const similarity = Number(detail.similarity || 0)
+		const similarityPercent = `${Math.round(Math.max(0, Math.min(1, similarity)) * 100)}%`
+		bodyHtml = `
+            <div class="text-sm opacity-80">
+                User: <span class="font-medium">${escapeHtml(detail.username || '-')}</span>
+                | Similarity: <span class="font-medium">${similarityPercent}</span>
+            </div>
+            <div id="graph-container" class="mt-3 w-full h-[600px] border rounded-lg bg-white shadow-lg" data-username="${escapeHtml(detail.username || 'User')}"></div>
+        `
+	}
+
+	root.innerHTML = `
+        <section class="space-y-4">
+            <div class="flex items-center gap-2">
+                <h1 class="text-2xl font-bold mr-auto">Graph Viewer</h1>
+                <a class="btn btn-sm btn-ghost" href="${GALLERY_PAGE_PATH}">Back to Gallery</a>
+                <label class="text-sm opacity-70">Metric:</label>
+                <select class="select select-sm select-bordered" data-gallery-graph-metric>
+                    <option value="cosine" ${metric === 'cosine' ? 'selected' : ''}>Cosine</option>
+                    <option value="weighted_jaccard" ${metric === 'weighted_jaccard' ? 'selected' : ''}>Weighted Jaccard</option>
+                </select>
+            </div>
+            ${bodyHtml}
+        </section>
+    `
+
+	if (!galleryGraphPageState.loading && !galleryGraphPageState.error && detail) {
+		renderGraphControls()
+		const files = Array.isArray(detail.files)
+			? detail.files.map(file =>
+					normalizeGalleryFileForGraph(file, Number(detail.owner_user_id || 0))
+				)
+			: []
+		updateUserGraph(detail.username || 'User', files)
+	}
+}
+
+async function loadGalleryGraphPage() {
+	if (galleryGraphPageState.loading) return
+	galleryGraphPageState.loading = true
+	galleryGraphPageState.error = ''
+	renderGalleryGraphPage()
+
+	try {
+		const response = await fetch(
+			galleryGraphDetailApiUrl(
+				galleryGraphPageState.ownerUserId,
+				galleryGraphPageState.metric
+			),
+			{ headers: { Accept: 'application/json' } }
+		)
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Failed to load graph'))
+		}
+		galleryGraphPageState.detail = await response.json()
+	} catch (err) {
+		galleryGraphPageState.detail = null
+		galleryGraphPageState.error = normalizeApiError(
+			err?.message,
+			'Failed to load graph'
+		)
+	} finally {
+		galleryGraphPageState.loading = false
+		renderGalleryGraphPage()
+	}
+}
+
+function renderGalleryPage() {
+	const root = ensureGalleryPageRoot()
+	if (!root) return
+
+	const metric = galleryPageState.metric === 'weighted_jaccard'
+		? 'weighted_jaccard'
+		: 'cosine'
+
+	const bodyHtml = galleryPageState.loading
+		? '<p class=\"text-sm opacity-70\">Loading gallery...</p>'
+		: galleryPageState.error
+			? `<p class=\"text-sm text-error\">${escapeHtml(galleryPageState.error)}</p>`
+			: galleryPageState.items.length === 0
+				? '<p class=\"text-sm opacity-70\">No published graphs found.</p>'
+				: `<div class=\"grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4\">${galleryPageState.items
+						.map(item => {
+							const similarity = Number(item.similarity || 0)
+							const similarityPercent = `${Math.round(
+								Math.max(0, Math.min(1, similarity)) * 100
+							)}%`
+							return `
+                                <div class=\"border border-base-300 rounded-lg p-3 bg-base-100\">
+                                    <div class=\"font-semibold\">${escapeHtml(item.username || '-')}</div>
+                                    <div class=\"text-sm opacity-80 mt-1\">Files: ${Number(item.files_count || 0)}</div>
+                                    <div class=\"text-sm opacity-80\">Tags: ${Number(item.tags_count || 0)}</div>
+                                    <div class=\"text-sm opacity-80\">Similarity: ${similarityPercent}</div>
+                                    <div class=\"text-xs opacity-70 mt-1\">Snapshot: ${escapeHtml(formatApiTimestamp(item.snapshot_updated_at || ''))}</div>
+                                    ${
+																			Array.isArray(item.snapshot_summary?.top_tags) &&
+																			item.snapshot_summary.top_tags.length > 0
+																				? `<div class="text-xs opacity-75 mt-1">Top tags: ${escapeHtml(
+																						item.snapshot_summary.top_tags
+																							.slice(0, 3)
+																							.map(tag => String(tag?.display_name || '').trim())
+																							.filter(Boolean)
+																							.join(', ')
+																					)}</div>`
+																				: ''
+																		}
+                                    <div class=\"mt-3\">
+                                        <button class=\"btn btn-sm btn-primary\" type=\"button\" data-gallery-open-owner=\"${Number(item.owner_user_id || 0)}\">Open graph</button>
+                                    </div>
+                                </div>
+                            `
+						})
+						.join('')}</div>`
+
+	root.innerHTML = `
+        <section class=\"space-y-4\">
+            <div class=\"flex items-center gap-2\">
+                <h1 class=\"text-2xl font-bold mr-auto\">Gallery</h1>
+                <label class=\"text-sm opacity-70\">Metric:</label>
+                <select class=\"select select-sm select-bordered\" data-gallery-metric>
+                    <option value=\"cosine\" ${metric === 'cosine' ? 'selected' : ''}>Cosine</option>
+                    <option value=\"weighted_jaccard\" ${metric === 'weighted_jaccard' ? 'selected' : ''}>Weighted Jaccard</option>
+                </select>
+                <button class=\"btn btn-sm\" type=\"button\" data-gallery-refresh>Refresh</button>
+            </div>
+            ${bodyHtml}
+        </section>
+    `
+}
+
+async function loadGalleryPage() {
+	if (galleryPageState.loading) return
+	galleryPageState.loading = true
+	galleryPageState.error = ''
+	renderGalleryPage()
+
+	try {
+		const response = await fetch(
+			`${galleryGraphsApiUrl()}?metric=${encodeURIComponent(galleryPageState.metric)}&limit=60&offset=0`,
+			{ headers: { Accept: 'application/json' } }
+		)
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Failed to load gallery'))
+		}
+		const payload = await response.json()
+		galleryPageState.items = Array.isArray(payload?.items) ? payload.items : []
+	} catch (err) {
+		galleryPageState.error = normalizeApiError(err?.message, 'Failed to load gallery')
+	} finally {
+		galleryPageState.loading = false
+		renderGalleryPage()
+	}
+}
+
+function renderLeaderboardPage() {
+	const root = ensureLeaderboardPageRoot()
+	if (!root) return
+
+	const bodyHtml = leaderboardPageState.loading
+		? '<p class=\"text-sm opacity-70\">Loading leaderboard...</p>'
+		: leaderboardPageState.error
+			? `<p class=\"text-sm text-error\">${escapeHtml(leaderboardPageState.error)}</p>`
+			: leaderboardPageState.items.length === 0
+				? '<p class=\"text-sm opacity-70\">No views in selected period.</p>'
+				: `<div class=\"overflow-x-auto border rounded-md\">
+                    <table class=\"table table-zebra table-sm\">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>User</th>
+                                <th>Views</th>
+                                <th>Downloads</th>
+                                <th>Graph</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${leaderboardPageState.items
+															.map(
+																(item, index) => `
+                                <tr>
+                                    <td>${index + 1}</td>
+                                    <td>${escapeHtml(item.username || '-')}</td>
+                                    <td>${Number(item.views || 0)}</td>
+                                    <td>${Number(item.downloads || 0)}</td>
+                                    <td>
+                                        <a
+                                            class="btn btn-xs btn-outline"
+                                            href="${galleryGraphPageUrl(Number(item.owner_user_id || 0), 'cosine')}"
+                                            data-leaderboard-open-owner="${Number(item.owner_user_id || 0)}"
+                                        >
+                                            Open
+                                        </a>
+                                    </td>
+                                </tr>
+                            `
+															)
+															.join('')}
+                        </tbody>
+                    </table>
+                </div>`
+
+	root.innerHTML = `
+        <section class=\"space-y-4\">
+            <div class=\"flex items-center gap-2\">
+                <h1 class=\"text-2xl font-bold mr-auto\">Leaderboard</h1>
+                <label class=\"text-sm opacity-70\">Period:</label>
+                <select class=\"select select-sm select-bordered\" data-leaderboard-period>
+                    <option value=\"week\" ${leaderboardPageState.period === 'week' ? 'selected' : ''}>Week</option>
+                    <option value=\"month\" ${leaderboardPageState.period === 'month' ? 'selected' : ''}>Month</option>
+                    <option value=\"year\" ${leaderboardPageState.period === 'year' ? 'selected' : ''}>Year</option>
+                    <option value=\"all\" ${leaderboardPageState.period === 'all' ? 'selected' : ''}>All</option>
+                </select>
+                <button class=\"btn btn-sm\" type=\"button\" data-leaderboard-refresh>Refresh</button>
+            </div>
+            ${bodyHtml}
+        </section>
+    `
+}
+
+async function loadLeaderboardPage() {
+	if (leaderboardPageState.loading) return
+	leaderboardPageState.loading = true
+	leaderboardPageState.error = ''
+	renderLeaderboardPage()
+
+	try {
+		const response = await fetch(
+			`${leaderboardApiUrl()}?period=${encodeURIComponent(leaderboardPageState.period)}&limit=100&offset=0`,
+			{ headers: { Accept: 'application/json' } }
+		)
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Failed to load leaderboard'))
+		}
+		const payload = await response.json()
+		leaderboardPageState.items = Array.isArray(payload?.items)
+			? payload.items
+			: []
+	} catch (err) {
+		leaderboardPageState.error = normalizeApiError(
+			err?.message,
+			'Failed to load leaderboard'
+		)
+	} finally {
+		leaderboardPageState.loading = false
+		renderLeaderboardPage()
+	}
+}
+
 function readInitialFileData() {
 	const fileDataEl = document.getElementById('file-data')
 	if (!fileDataEl) return null
@@ -1714,6 +2494,7 @@ function readInitialFileData() {
 
 function renderProfileData(payload, forceUpdate = false) {
 	const { files, username } = normalizeFileData(payload)
+	renderGraphControls()
 
 	// Проверяем, изменились ли данные
 	const hasFilesChanged = filesHaveChanged(lastFilesData, files)
@@ -1792,8 +2573,143 @@ async function refreshFilesData(forceUpdate = false) {
 	}
 }
 
+async function addManualTagForFile(fileId, fileName = '') {
+	const normalizedFileId = normalizeFileId(fileId)
+	if (!normalizedFileId) return
+
+	const input = window.prompt(
+		`Manual tag for "${fileName || getFileNameById(normalizedFileId)}" (max 15 chars):`,
+		''
+	)
+	if (input === null) return
+
+	const manualTag = normalizeManualTagInput(input)
+	if (!manualTag) {
+		window.alert('Manual tag is empty')
+		return
+	}
+	if (manualTag.length > 15) {
+		window.alert('Manual tag must be 15 chars or less')
+		return
+	}
+
+	try {
+		const response = await fetch(fileTagsApiUrl(normalizedFileId), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+			},
+			body: JSON.stringify({ tag: manualTag }),
+		})
+		if (!response.ok) {
+			throw new Error(await readApiError(response, 'Failed to add manual tag'))
+		}
+		await refreshFilesData(true)
+	} catch (err) {
+		window.alert(normalizeApiError(err?.message, 'Failed to add manual tag'))
+	}
+}
+
+function setupGraphTagActions() {
+	window.addEventListener('graph:edit-tags-requested', event => {
+		const detail = event?.detail || {}
+		const fileId = normalizeFileId(detail.fileId)
+		if (!fileId) return
+		openTagEditor(fileId)
+	})
+
+	window.addEventListener('graph:add-manual-tag-requested', event => {
+		const detail = event?.detail || {}
+		void addManualTagForFile(detail.fileId, String(detail.fileName || ''))
+	})
+}
+
 function setupFilesTableActions() {
 	document.addEventListener('click', async event => {
+		const editTagsButton = event.target.closest('[data-file-tags-edit]')
+		if (editTagsButton) {
+			const fileId = Number(editTagsButton.dataset.fileTagsEdit || 0)
+			if (fileId > 0) {
+				if (Number(tagEditorState.openFileId) === fileId) {
+					closeTagEditor()
+				} else {
+					openTagEditor(fileId)
+				}
+			}
+			return
+		}
+
+		const cancelButton = event.target.closest('[data-tag-editor-cancel]')
+		if (cancelButton) {
+			closeTagEditor()
+			return
+		}
+
+		const addManualButton = event.target.closest('[data-tag-editor-add-manual]')
+		if (addManualButton) {
+			addManualTagToEditor()
+			return
+		}
+
+		const removeManualButton = event.target.closest(
+			'[data-tag-editor-remove-manual]'
+		)
+		if (removeManualButton) {
+			const index = Number(removeManualButton.dataset.tagEditorRemoveManual || -1)
+			if (index >= 0 && index < tagEditorState.manualTags.length) {
+				tagEditorState.manualTags.splice(index, 1)
+				tagEditorState.error = ''
+				renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+			}
+			return
+		}
+
+		const saveTagsButton = event.target.closest('[data-tag-editor-save]')
+		if (saveTagsButton) {
+			const fileId = Number(tagEditorState.openFileId || 0)
+			if (!fileId || tagEditorState.saving) return
+			if (tagEditorState.autoTagIds.length > 5) {
+				tagEditorState.error = 'Лимит auto tag: 5'
+				renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+				return
+			}
+			if (tagEditorState.autoTagIds.length + tagEditorState.manualTags.length > 10) {
+				tagEditorState.error = 'Лимит тегов на файл: 10'
+				renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+				return
+			}
+
+			tagEditorState.saving = true
+			tagEditorState.error = ''
+			renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+
+			try {
+				const response = await fetch(fileTagsApiUrl(fileId), {
+					method: 'PUT',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json',
+					},
+					body: JSON.stringify({
+						auto_tag_ids: [...tagEditorState.autoTagIds],
+						manual_tags: [...tagEditorState.manualTags],
+					}),
+				})
+				if (!response.ok) {
+					throw new Error(await readApiError(response, 'Failed to save tags'))
+				}
+
+				closeTagEditor()
+				await refreshFilesData(true)
+			} catch (err) {
+				tagEditorState.saving = false
+				tagEditorState.error = normalizeApiError(err?.message, 'Failed to save tags')
+				renderFilesTable(Array.isArray(lastFilesData) ? lastFilesData : [])
+			}
+			return
+		}
+
 		const button = event.target.closest('[data-file-delete-url]')
 		if (!button) return
 
@@ -1810,6 +2726,26 @@ function setupFilesTableActions() {
 		} catch (err) {
 			alert('Failed to delete file: ' + err.message)
 		}
+	})
+
+	document.addEventListener('change', event => {
+		const autoCheckbox = event.target.closest('[data-tag-editor-auto-id]')
+		if (!autoCheckbox) return
+		toggleAutoTagInEditor(autoCheckbox.dataset.tagEditorAutoId)
+	})
+
+	document.addEventListener('input', event => {
+		const manualInput = event.target.closest('[data-tag-editor-manual-input]')
+		if (!manualInput) return
+		tagEditorState.manualInput = manualInput.value || ''
+	})
+
+	document.addEventListener('keydown', event => {
+		const manualInput = event.target.closest('[data-tag-editor-manual-input]')
+		if (!manualInput) return
+		if (event.key !== 'Enter') return
+		event.preventDefault()
+		addManualTagToEditor()
 	})
 }
 
@@ -1901,44 +2837,215 @@ function setupAnalysisActions() {
 function setupPreferencesActions() {
 	document.addEventListener('change', event => {
 		const providerSelect = event.target.closest('[data-pref-provider]')
-		if (!providerSelect) return
+		if (providerSelect) {
+			const nextValue = normalizeChatProviderValue(providerSelect.value)
+			switch (providerSelect.dataset.prefProvider) {
+				case 'summary':
+					preferencesState.summaryProvider = nextValue
+					break
+				case 'chapters':
+					preferencesState.chaptersProvider = nextValue
+					break
+				case 'flashcards':
+					preferencesState.flashcardsProvider = nextValue
+					break
+				case 'chat_default':
+					preferencesState.chatDefaultProvider = nextValue
+					break
+				default:
+					return
+			}
 
-		const nextValue = normalizeChatProviderValue(providerSelect.value)
-		switch (providerSelect.dataset.prefProvider) {
-			case 'summary':
-				preferencesState.summaryProvider = nextValue
-				break
-			case 'chapters':
-				preferencesState.chaptersProvider = nextValue
-				break
-			case 'flashcards':
-				preferencesState.flashcardsProvider = nextValue
-				break
-			case 'chat_default':
-				preferencesState.chatDefaultProvider = nextValue
-				break
-			default:
-				return
+			preferencesState.success = ''
+			preferencesState.error = ''
+			renderPreferencesPanel()
+			return
+		}
+
+		const showProbCheckbox = event.target.closest(
+			'[data-pref-show-tag-probabilities]'
+		)
+		if (showProbCheckbox) {
+			preferencesState.showTagProbabilities = Boolean(showProbCheckbox.checked)
+			setShowTagProbabilities(preferencesState.showTagProbabilities)
+			updateUserGraph(lastUsername || 'User', lastFilesData || [])
+			preferencesState.success = ''
+			preferencesState.error = ''
+			renderPreferencesPanel()
+			return
+		}
+
+		const gallerySelect = event.target.closest('[data-pref-gallery-visibility]')
+		if (gallerySelect) {
+			preferencesState.galleryVisibility =
+				String(gallerySelect.value || '').toLowerCase() === 'public'
+					? 'public'
+					: 'private'
+			preferencesState.success = ''
+			preferencesState.error = ''
+			renderPreferencesPanel()
+			return
+		}
+
+		const topNSelect = event.target.closest('[data-graph-top-n]')
+		if (topNSelect) {
+			if (setGraphTopN(topNSelect.value)) {
+				updateUserGraph(lastUsername || 'User', lastFilesData || [])
+			}
+			renderGraphControls()
+			return
 		}
 
 		preferencesState.success = ''
 		preferencesState.error = ''
-		renderPreferencesPanel()
 	})
 
 	document.addEventListener('click', event => {
 		const saveButton = event.target.closest('[data-pref-save]')
-		if (!saveButton) return
-		void savePreferences()
+		if (saveButton) {
+			void savePreferences()
+			return
+		}
+
+		const refreshSnapshotButton = event.target.closest(
+			'[data-pref-refresh-snapshot]'
+		)
+		if (refreshSnapshotButton) {
+			void refreshGallerySnapshot()
+		}
+	})
+}
+
+function setupGalleryLeaderboardActions() {
+	document.addEventListener('change', event => {
+		const metricSelect = event.target.closest('[data-gallery-metric]')
+		if (metricSelect) {
+			galleryPageState.metric =
+				String(metricSelect.value || '').toLowerCase() === 'weighted_jaccard'
+					? 'weighted_jaccard'
+					: 'cosine'
+			void loadGalleryPage()
+			return
+		}
+
+		const periodSelect = event.target.closest('[data-leaderboard-period]')
+		if (periodSelect) {
+			const nextPeriod = String(periodSelect.value || '').toLowerCase()
+			if (
+				nextPeriod === 'week' ||
+				nextPeriod === 'month' ||
+				nextPeriod === 'year' ||
+				nextPeriod === 'all'
+			) {
+				leaderboardPageState.period = nextPeriod
+			} else {
+				leaderboardPageState.period = 'week'
+			}
+			void loadLeaderboardPage()
+		}
+
+		const graphMetricSelect = event.target.closest('[data-gallery-graph-metric]')
+		if (graphMetricSelect && isGalleryGraphPage()) {
+			galleryGraphPageState.metric =
+				String(graphMetricSelect.value || '').toLowerCase() ===
+				'weighted_jaccard'
+					? 'weighted_jaccard'
+					: 'cosine'
+			window.history.replaceState(
+				null,
+				'',
+				galleryGraphPageUrl(
+					galleryGraphPageState.ownerUserId,
+					galleryGraphPageState.metric
+				)
+			)
+			void loadGalleryGraphPage()
+		}
+	})
+
+	async function openGalleryGraph(ownerUserID, metric) {
+		if (!Number.isInteger(ownerUserID) || ownerUserID <= 0) return
+		try {
+			await fetch(`/api/gallery/graphs/${encodeURIComponent(ownerUserID)}/view`, {
+				method: 'POST',
+				headers: { Accept: 'application/json' },
+			})
+		} catch {}
+		window.location.assign(galleryGraphPageUrl(ownerUserID, metric))
+	}
+
+	document.addEventListener('click', event => {
+		const galleryRefresh = event.target.closest('[data-gallery-refresh]')
+		if (galleryRefresh) {
+			void loadGalleryPage()
+			return
+		}
+
+		const leaderboardRefresh = event.target.closest('[data-leaderboard-refresh]')
+		if (leaderboardRefresh) {
+			void loadLeaderboardPage()
+			return
+		}
+
+		const openOwnerButton = event.target.closest('[data-gallery-open-owner]')
+		if (openOwnerButton) {
+			const ownerUserID = Number(openOwnerButton.dataset.galleryOpenOwner || 0)
+			if (ownerUserID > 0) {
+				void openGalleryGraph(ownerUserID, galleryPageState.metric)
+			}
+			return
+		}
+
+		const leaderboardOpenButton = event.target.closest(
+			'[data-leaderboard-open-owner]'
+		)
+		if (leaderboardOpenButton) {
+			event.preventDefault()
+			const ownerUserID = Number(
+				leaderboardOpenButton.dataset.leaderboardOpenOwner || 0
+			)
+			if (ownerUserID > 0) {
+				void openGalleryGraph(ownerUserID, 'cosine')
+			}
+		}
 	})
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+	setupPreferencesActions()
+	setupGraphTagActions()
+	setupGalleryLeaderboardActions()
+	setGraphInteractionMode(isGalleryGraphPage() ? 'readonly' : 'full')
+
 	if (isPreferencesPage()) {
 		ensurePreferencesPanelRoot()
 		renderPreferencesPanel()
-		setupPreferencesActions()
 		void loadPreferences(false)
+		return
+	}
+
+	if (isGalleryPage()) {
+		renderGalleryPage()
+		void loadGalleryPage()
+		return
+	}
+
+	if (isLeaderboardPage()) {
+		renderLeaderboardPage()
+		void loadLeaderboardPage()
+		return
+	}
+
+	if (isGalleryGraphPage()) {
+		galleryGraphPageState.ownerUserId = getGalleryGraphPageOwnerUserId()
+		galleryGraphPageState.metric = getGalleryMetricFromQueryOrDefault()
+		renderGalleryGraphPage()
+		if (galleryGraphPageState.ownerUserId > 0) {
+			void loadGalleryGraphPage()
+		} else {
+			galleryGraphPageState.error = 'Invalid graph owner id'
+			renderGalleryGraphPage()
+		}
 		return
 	}
 

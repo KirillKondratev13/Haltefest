@@ -18,18 +18,30 @@ type llmPreferences struct {
 	ChatDefaultProvider string
 }
 
+type graphPreferences struct {
+	ShowTagProbabilities     bool
+	GalleryVisibility        string
+	GallerySnapshotPath      *string
+	GallerySnapshotUpdatedAt *time.Time
+}
+
 type llmPreferencesResponse struct {
-	SummaryProvider     string `json:"summary_provider"`
-	ChaptersProvider    string `json:"chapters_provider"`
-	FlashcardsProvider  string `json:"flashcards_provider"`
-	ChatDefaultProvider string `json:"chat_default_provider"`
+	SummaryProvider          string     `json:"summary_provider"`
+	ChaptersProvider         string     `json:"chapters_provider"`
+	FlashcardsProvider       string     `json:"flashcards_provider"`
+	ChatDefaultProvider      string     `json:"chat_default_provider"`
+	ShowTagProbabilities     bool       `json:"show_tag_probabilities"`
+	GalleryVisibility        string     `json:"gallery_visibility"`
+	GallerySnapshotUpdatedAt *time.Time `json:"gallery_snapshot_updated_at,omitempty"`
 }
 
 type upsertPreferencesRequest struct {
-	SummaryProvider     string `json:"summary_provider"`
-	ChaptersProvider    string `json:"chapters_provider"`
-	FlashcardsProvider  string `json:"flashcards_provider"`
-	ChatDefaultProvider string `json:"chat_default_provider"`
+	SummaryProvider      string `json:"summary_provider"`
+	ChaptersProvider     string `json:"chapters_provider"`
+	FlashcardsProvider   string `json:"flashcards_provider"`
+	ChatDefaultProvider  string `json:"chat_default_provider"`
+	ShowTagProbabilities *bool  `json:"show_tag_probabilities"`
+	GalleryVisibility    string `json:"gallery_visibility"`
 }
 
 type queryRower interface {
@@ -45,12 +57,30 @@ func defaultLLMPreferences() llmPreferences {
 	}
 }
 
+func defaultGraphPreferences() graphPreferences {
+	return graphPreferences{
+		ShowTagProbabilities: false,
+		GalleryVisibility:    "private",
+	}
+}
+
 func normalizeProviderOrDefault(value string, fallback string) string {
 	provider, ok := normalizeLLMProvider(value)
 	if ok {
 		return provider
 	}
 	return fallback
+}
+
+func normalizeGalleryVisibilityOrDefault(value string, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "public":
+		return "public"
+	case "private":
+		return "private"
+	default:
+		return fallback
+	}
 }
 
 func parseRequiredProvider(value string, field string) (string, error) {
@@ -74,12 +104,15 @@ func providerForAnalysisType(prefs llmPreferences, analysisType string) string {
 	}
 }
 
-func toLLMPreferencesResponse(prefs llmPreferences) llmPreferencesResponse {
+func toLLMPreferencesResponse(llmPrefs llmPreferences, graphPrefs graphPreferences) llmPreferencesResponse {
 	return llmPreferencesResponse{
-		SummaryProvider:     prefs.SummaryProvider,
-		ChaptersProvider:    prefs.ChaptersProvider,
-		FlashcardsProvider:  prefs.FlashcardsProvider,
-		ChatDefaultProvider: prefs.ChatDefaultProvider,
+		SummaryProvider:          llmPrefs.SummaryProvider,
+		ChaptersProvider:         llmPrefs.ChaptersProvider,
+		FlashcardsProvider:       llmPrefs.FlashcardsProvider,
+		ChatDefaultProvider:      llmPrefs.ChatDefaultProvider,
+		ShowTagProbabilities:     graphPrefs.ShowTagProbabilities,
+		GalleryVisibility:        graphPrefs.GalleryVisibility,
+		GallerySnapshotUpdatedAt: graphPrefs.GallerySnapshotUpdatedAt,
 	}
 }
 
@@ -135,6 +168,51 @@ func (fh *FileHandler) upsertUserLLMPreferences(ctx context.Context, userID int,
 	return err
 }
 
+func (fh *FileHandler) loadUserGraphPreferences(ctx context.Context, db queryRower, userID int) (graphPreferences, error) {
+	prefs := defaultGraphPreferences()
+	var galleryVisibility string
+
+	err := db.QueryRow(ctx, `
+		SELECT show_tag_probabilities, gallery_visibility, gallery_snapshot_path, gallery_snapshot_updated_at
+		FROM user_graph_preferences
+		WHERE user_id = $1
+	`, userID).Scan(&prefs.ShowTagProbabilities, &galleryVisibility, &prefs.GallerySnapshotPath, &prefs.GallerySnapshotUpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return prefs, nil
+		}
+		return graphPreferences{}, err
+	}
+
+	prefs.GalleryVisibility = normalizeGalleryVisibilityOrDefault(galleryVisibility, prefs.GalleryVisibility)
+	return prefs, nil
+}
+
+func (fh *FileHandler) upsertUserGraphPreferences(ctx context.Context, userID int, prefs graphPreferences) error {
+	now := time.Now().UTC()
+	_, err := fh.FileService.DB.Exec(ctx, `
+		INSERT INTO user_graph_preferences (
+			user_id, show_tag_probabilities, gallery_visibility, gallery_snapshot_path, gallery_snapshot_updated_at, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		ON CONFLICT (user_id)
+		DO UPDATE SET
+			show_tag_probabilities = EXCLUDED.show_tag_probabilities,
+			gallery_visibility = EXCLUDED.gallery_visibility,
+			gallery_snapshot_path = EXCLUDED.gallery_snapshot_path,
+			gallery_snapshot_updated_at = EXCLUDED.gallery_snapshot_updated_at,
+			updated_at = EXCLUDED.updated_at
+	`,
+		userID,
+		prefs.ShowTagProbabilities,
+		prefs.GalleryVisibility,
+		prefs.GallerySnapshotPath,
+		prefs.GallerySnapshotUpdatedAt,
+		now,
+	)
+	return err
+}
+
 func (fh *FileHandler) handleGetPreferences(w http.ResponseWriter, r *http.Request) error {
 	user := getUserFromContext(r)
 	if user == nil {
@@ -142,12 +220,17 @@ func (fh *FileHandler) handleGetPreferences(w http.ResponseWriter, r *http.Reque
 		return nil
 	}
 
-	prefs, err := fh.loadUserLLMPreferences(r.Context(), fh.FileService.DB, user.ID)
+	llmPrefs, err := fh.loadUserLLMPreferences(r.Context(), fh.FileService.DB, user.ID)
 	if err != nil {
 		return err
 	}
 
-	return writeJSON(w, http.StatusOK, toLLMPreferencesResponse(prefs))
+	graphPrefs, err := fh.loadUserGraphPreferences(r.Context(), fh.FileService.DB, user.ID)
+	if err != nil {
+		return err
+	}
+
+	return writeJSON(w, http.StatusOK, toLLMPreferencesResponse(llmPrefs, graphPrefs))
 }
 
 func (fh *FileHandler) handleUpsertPreferences(w http.ResponseWriter, r *http.Request) error {
@@ -161,6 +244,11 @@ func (fh *FileHandler) handleUpsertPreferences(w http.ResponseWriter, r *http.Re
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return nil
+	}
+
+	currentGraphPrefs, err := fh.loadUserGraphPreferences(r.Context(), fh.FileService.DB, user.ID)
+	if err != nil {
+		return err
 	}
 
 	summaryProvider, err := parseRequiredProvider(request.SummaryProvider, "summary_provider")
@@ -197,5 +285,65 @@ func (fh *FileHandler) handleUpsertPreferences(w http.ResponseWriter, r *http.Re
 		return err
 	}
 
-	return writeJSON(w, http.StatusOK, toLLMPreferencesResponse(prefs))
+	nextGraphPrefs := currentGraphPrefs
+	if request.ShowTagProbabilities != nil {
+		nextGraphPrefs.ShowTagProbabilities = *request.ShowTagProbabilities
+	}
+	if strings.TrimSpace(request.GalleryVisibility) != "" {
+		nextGraphPrefs.GalleryVisibility = normalizeGalleryVisibilityOrDefault(
+			request.GalleryVisibility,
+			nextGraphPrefs.GalleryVisibility,
+		)
+	}
+
+	publishTransition :=
+		currentGraphPrefs.GalleryVisibility != "public" &&
+			nextGraphPrefs.GalleryVisibility == "public"
+	if publishTransition {
+		snapshotPath, snapshotUpdatedAt, err := fh.refreshUserGallerySnapshot(r.Context(), user.ID)
+		if err != nil {
+			return err
+		}
+		nextGraphPrefs.GallerySnapshotPath = &snapshotPath
+		nextGraphPrefs.GallerySnapshotUpdatedAt = &snapshotUpdatedAt
+	}
+
+	if err := fh.upsertUserGraphPreferences(r.Context(), user.ID, nextGraphPrefs); err != nil {
+		return err
+	}
+
+	return writeJSON(w, http.StatusOK, toLLMPreferencesResponse(prefs, nextGraphPrefs))
+}
+
+func (fh *FileHandler) handleRefreshGallerySnapshot(w http.ResponseWriter, r *http.Request) error {
+	user := getUserFromContext(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return nil
+	}
+
+	graphPrefs, err := fh.loadUserGraphPreferences(r.Context(), fh.FileService.DB, user.ID)
+	if err != nil {
+		return err
+	}
+	if graphPrefs.GalleryVisibility != "public" {
+		http.Error(w, "Gallery must be public to refresh snapshot", http.StatusConflict)
+		return nil
+	}
+
+	snapshotPath, snapshotUpdatedAt, err := fh.refreshUserGallerySnapshot(r.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	graphPrefs.GallerySnapshotPath = &snapshotPath
+	graphPrefs.GallerySnapshotUpdatedAt = &snapshotUpdatedAt
+	if err := fh.upsertUserGraphPreferences(r.Context(), user.ID, graphPrefs); err != nil {
+		return err
+	}
+
+	llmPrefs, err := fh.loadUserLLMPreferences(r.Context(), fh.FileService.DB, user.ID)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, toLLMPreferencesResponse(llmPrefs, graphPrefs))
 }

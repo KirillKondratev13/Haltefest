@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: haltefest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        app.kubernetes.io/part-of: haltefest
+    spec:
+      containers:
+        - name: backend
+          image: {{ printf "%s:%s" .Values.images.backend.repository .Values.images.backend.tag }}
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.port }}
+          env:
+            - name: SERVER_ADDR
+              value: ":{{ .Values.backend.port }}"
+            - name: FILER_URL
+              value: "http://seaweedfs-filer:8888"
+            - name: ASSETS_DIR
+              value: "./web/public/assets"
+            - name: KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: DB_CONN_STR
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecretName }}
+                  key: DB_CONN_STR
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: haltefest
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: {{ .Values.backend.port }}
+      targetPort: http

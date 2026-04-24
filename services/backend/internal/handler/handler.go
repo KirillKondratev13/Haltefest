@@ -11,11 +11,12 @@ import (
 )
 
 type Dependencies struct {
-	AssetsFS    http.FileSystem
-	UserService *service.UserService
-	FileService *service.FileService // Добавили FileService
-	Config      config.Config
-	KafkaWriter KafkaWriter // New interface for Kafka
+	AssetsFS      http.FileSystem
+	UserService   *service.UserService
+	FileService   *service.FileService // Добавили FileService
+	Config        config.Config
+	KafkaWriter   KafkaWriter // New interface for Kafka
+	SnapshotCache SnapshotCache
 }
 
 type KafkaWriter interface {
@@ -33,10 +34,11 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 	}
 
 	fileHandler := FileHandler{
-		UserService: deps.UserService,
-		FileService: deps.FileService, // Передаем FileService
-		FilerURL:    deps.Config.FilerURL,
-		KafkaWriter: deps.KafkaWriter,
+		UserService:   deps.UserService,
+		FileService:   deps.FileService, // Передаем FileService
+		FilerURL:      deps.Config.FilerURL,
+		KafkaWriter:   deps.KafkaWriter,
+		SnapshotCache: deps.SnapshotCache,
 	}
 
 	r.Use(auth.sessionMiddleware)
@@ -52,6 +54,9 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 		r.Use(auth.authMiddleware)
 		r.Get("/profile", handler(auth.handleProfile))
 		r.Get("/preferences", handler(auth.handlePreferences))
+		r.Get("/gallery", handler(auth.handleGallery))
+		r.Get("/gallery/graphs/{owner_user_id}", handler(auth.handleGalleryGraph))
+		r.Get("/leaderboard", handler(auth.handleLeaderboard))
 		r.Post("/logout", handler(auth.handleLogout))
 
 		r.Post("/profile/files/delete", handler(fileHandler.handleDeleteFile))
@@ -60,6 +65,16 @@ func RegisterRoutes(r *chi.Mux, deps Dependencies) {
 		r.Post("/profile/upload", handler(fileHandler.handleFileUpload))
 		r.Get("/api/preferences", handler(fileHandler.handleGetPreferences))
 		r.Post("/api/preferences", handler(fileHandler.handleUpsertPreferences))
+		r.Post("/api/preferences/gallery-snapshot:refresh", handler(fileHandler.handleRefreshGallerySnapshot))
+		r.Get("/api/files/{file_id}/tags", handler(fileHandler.handleGetFileTags))
+		r.Put("/api/files/{file_id}/tags", handler(fileHandler.handleReplaceFileTags))
+		r.Post("/api/files/{file_id}/tags", handler(fileHandler.handleAddManualFileTag))
+		r.Delete("/api/files/{file_id}/tags/{tag_id}", handler(fileHandler.handleDeleteFileTag))
+		r.Get("/api/gallery/graphs", handler(fileHandler.handleListGalleryGraphs))
+		r.Get("/api/gallery/graphs/{owner_user_id}", handler(fileHandler.handleGetGalleryGraph))
+		r.Post("/api/gallery/graphs/{owner_user_id}/view", handler(fileHandler.handleWriteGalleryView))
+		r.Get("/api/gallery/graphs/{owner_user_id}/files/{file_id}/download", handler(fileHandler.handleDownloadGalleryFile))
+		r.Get("/api/leaderboard/graphs", handler(fileHandler.handleGetLeaderboardGraphs))
 	})
 
 	r.Post("/api/files/{file_id}/analysis", handler(fileHandler.handleStartAnalysis))

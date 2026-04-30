@@ -58,6 +58,60 @@ make watch
 docker compose up -d --build backend
 ```
 
+### Известные проблемы при сборке с нуля
+
+#### 1. Отсутствует `go.sum`
+**Проблема**: Docker build падает с ошибкой "missing go.sum entry".
+
+**Причина**: Файл `.gitignore` исключал все `go.sum` через паттерн `**/go.sum`.
+
+**Решение**:
+```bash
+# 1. Удалите строку **/go.sum из .gitignore
+# 2. Сгенерируйте go.sum (может потребоваться создать временные .go файлы для templ-пакетов)
+cd services/backend
+# Создайте временные placeholder файлы если нужно
+echo "package home" > internal/view/home/home.go
+echo "package layout" > internal/view/layout/layout.go
+go mod tidy
+# Удалите временные файлы
+rm internal/view/home/home.go internal/view/layout/layout.go
+```
+
+В Dockerfile убедитесь что копируете `go.sum` вместе с `go.mod`:
+```dockerfile
+COPY go.mod go.sum ./
+```
+
+#### 2. Стили не применяются (daisyui)
+**Проблема**: Страница загружается без стилей.
+
+**Причина**: `daisyui` v5 требует Tailwind v4, но проект использует Tailwind v3.
+
+**Решение**: Используйте `daisyui` v4 с Tailwind v3:
+```json
+// services/backend/web/package.json
+{
+  "devDependencies": {
+    "daisyui": "4.12.24",  // Без ^ чтобы избежать обновления до v5
+    "tailwindcss": "^3.4.17"
+  }
+}
+```
+
+После изменения переустановите пакеты:
+```bash
+cd services/backend/web
+rm -rf node_modules package-lock.json
+npm install
+```
+
+#### 3. Dockerfile конфигурация
+Если `package-lock.json` отсутствует, используйте `npm install` вместо `npm ci`:
+```dockerfile
+RUN cd web && npm config set fetch-retry-maxtimeout 120000 && npm install --include=dev
+```
+
 ## Документация
 
 Рабочая документация проекта ведется локально в `docs/`.

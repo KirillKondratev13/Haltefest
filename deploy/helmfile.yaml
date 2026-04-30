@@ -3,10 +3,23 @@ helmDefaults:
   timeout: 900
   createNamespace: true
 
+repositories:
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+
 releases:
+  - name: kafka
+    namespace: haltefest
+    chart: bitnami/kafka
+    version: 26.8.0
+    values:
+      - ./values/kafka.yaml
+
   - name: haltefest-infra
     namespace: haltefest
     chart: ./charts/haltefest-infra
+    needs:
+      - haltefest/kafka
     values:
       - ./values/infra.yaml
 
@@ -14,6 +27,7 @@ releases:
     namespace: haltefest
     chart: ./charts/haltefest-app
     needs:
+      - haltefest/kafka
       - haltefest/haltefest-infra
     values:
       - ./values/app.yaml

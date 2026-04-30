@@ -114,12 +114,12 @@ services:
       - KAFKA_CONSUMER_GROUP=llm_analysis_group
       - MAX_ATTEMPTS=6
       - LLM_TIMEOUT_SECONDS=120
-      - LLM_MODEL_NAME=qwen2.5:0.5b
+      - LLM_MODEL_NAME=haltefest-qwen
       - LLM_MODEL_VERSION=qwen2.5-0.5b
       - PROMPT_VERSION=analysis-v1
       - OLLAMA_URL=http://ollama:11434
       - QDRANT_URL=http://qdrant:6333
-      - LLM_MODEL=qwen2.5:0.5b
+      - LLM_MODEL=haltefest-qwen
       - LLM_MODEL_FALLBACKS=qwen2.5:1.5b
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-4096}
       - GIGACHAT_AUTH_URL=${GIGACHAT_AUTH_URL:-https://ngw.devices.sberbank.ru:9443/api/v2/oauth}
@@ -195,7 +195,7 @@ services:
     restart: always
 
   dragonfly:
-    image: 'dragonflydb/dragonfly:v1.27.1'
+    image: "dragonflydb/dragonfly:v1.27.1"
     container_name: haltefest-dragonfly
     ports:
       - "6379:6379"
@@ -220,7 +220,8 @@ services:
       - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
       - KAFKA_METADATA_MAX_AGE_MS=5000
     healthcheck:
-      test: /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1
+      test: /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server
+        localhost:9092 > /dev/null 2>&1
       interval: 5s
       timeout: 10s
       retries: 10
@@ -233,7 +234,7 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: [ "/bin/bash", "-c" ]
     command:
       - |
         echo 'Creating Kafka topics...'
@@ -306,26 +307,14 @@ services:
     container_name: haltefest-ollama-init
     environment:
       - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_TEMPERATURE=${OLLAMA_TEMPERATURE:-0.3}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-4096}
     depends_on:
       ollama:
         condition: service_started
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo 'Waiting for Ollama to be ready...'
-        until ollama list > /dev/null 2>&1; do
-          sleep 2
-        done
-        echo 'Trying to pull preferred models...'
-        for model in qwen2.5:0.5b qwen2.5:1.5b; do
-          echo "Pulling $$model ..."
-          if ollama pull "$$model"; then
-            echo "Model pulled successfully: $$model"
-            exit 0
-          fi
-        done
-        echo 'Failed to pull any preferred model' >&2
-        exit 1
+    volumes:
+      - ./scripts/ollama-init.sh:/ollama-init.sh:ro
+    entrypoint: [ "/bin/sh", "/ollama-init.sh" ]
     restart: "no"
 
   log-collector:
@@ -362,7 +351,7 @@ services:
         condition: service_started
       seaweedfs-filer:
         condition: service_started
-    entrypoint: ["/bin/sh", "/scripts/collect-container-logs.sh"]
+    entrypoint: [ "/bin/sh", "/scripts/collect-container-logs.sh" ]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/logs

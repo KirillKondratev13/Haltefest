@@ -1,0 +1,73 @@
+# values/kafka.yaml
+# Kafka cluster configuration for local Haltefest development
+
+# Image override - use GHCR legacy images (Docker Hub tags removed)
+image:
+  registry: ghcr.io
+  repository: element-hq/bitnamilegacy/kafka
+  tag: 3.7.1-debian-12-r4
+  pullPolicy: IfNotPresent
+
+# Enable KRaft mode (Kafka without ZooKeeper)
+kraft:
+  enabled: true
+
+# Single controller node (also acts as broker since controllerOnly=false by default)
+controller:
+  replicaCount: 1
+  # controllerOnly: false  # default - controller also serves as broker
+
+# No dedicated broker-only nodes; the controller will also handle broker responsibilities
+broker:
+  replicaCount: 0
+
+# Listener configuration - all PLAINTEXT for local dev (no SASL/SSL)
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+# Inter-broker protocol version
+interBrokerProtocolVersion: "3.7"
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+    controller: 9093
+
+# Disable persistence for local dev (ephemeral storage)
+persistence:
+  enabled: false
+
+# Resource limits (optional - adjust based on available resources)
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+# Health checks
+healthProbes:
+  liveness:
+    enabled: true
+  readiness:
+    enabled: true
+  startup:
+    enabled: true
+
+# Logging
+logs:
+  level: "INFO"
+
+# Additional Kafka server properties (appended to generated config)
+extraConfig: |
+  log.retention.hours=24
+  log.retention.bytes=1073741824
+  auto.create.topics.enable=true

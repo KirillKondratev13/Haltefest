@@ -11,27 +11,27 @@ images:
   backend:
     repository: haltefest/backend
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
   parser:
     repository: haltefest/parser
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
   ml:
     repository: haltefest/ml
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
   indexer:
     repository: haltefest/indexer
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
   llmAnalysis:
     repository: haltefest/llm-analysis
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
   reranker:
     repository: haltefest/reranker
     tag: dev
-    pullPolicy: IfNotPresent
+    pullPolicy: Never
 
 backend:
   port: 8081

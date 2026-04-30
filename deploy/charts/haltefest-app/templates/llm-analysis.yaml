@@ -16,6 +16,10 @@ spec:
         app: llm-analysis
         app.kubernetes.io/part-of: haltefest
     spec:
+      initContainers:
+        - name: wait-for-ollama-model
+          image: curlimages/curl:8.5.0
+          command: ['sh', '-c', 'until curl -s http://ollama:11434/api/tags | grep -q haltefest-qwen; do echo waiting for haltefest-qwen model; sleep 5; done;']
       containers:
         - name: llm-analysis
           image: {{ printf "%s:%s" .Values.images.llmAnalysis.repository .Values.images.llmAnalysis.tag }}

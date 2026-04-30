@@ -1,0 +1,7 @@
+FROM qwen2.5:0.5b
+
+# Temperature: higher = more creative, lower = more coherent
+PARAMETER temperature 0.7
+
+# Context window size
+PARAMETER num_ctx 4096

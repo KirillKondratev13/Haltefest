@@ -63,6 +63,10 @@ spec:
         app: seaweedfs-volume
         app.kubernetes.io/part-of: haltefest
     spec:
+      initContainers:
+        - name: wait-for-master
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z seaweedfs-master {{ .Values.infra.seaweedfs.masterPort }}; do echo waiting for seaweedfs-master; sleep 2; done;']
       containers:
         - name: seaweedfs-volume
           image: {{ .Values.infra.seaweedfs.image }}
@@ -113,6 +117,10 @@ spec:
         app: seaweedfs-filer
         app.kubernetes.io/part-of: haltefest
     spec:
+      initContainers:
+        - name: wait-for-master
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z seaweedfs-master {{ .Values.infra.seaweedfs.masterPort }}; do echo waiting for seaweedfs-master; sleep 2; done;']
       containers:
         - name: seaweedfs-filer
           image: {{ .Values.infra.seaweedfs.image }}

@@ -5,7 +5,7 @@ metadata:
   annotations:
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
-    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-weight": "5"
   labels:
     app: ollama-init
     app.kubernetes.io/part-of: haltefest
@@ -24,6 +24,10 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: http://ollama:{{ .Values.infra.ollama.port }}
+            - name: OLLAMA_TEMPERATURE
+              value: {{ .Values.infra.ollama.temperature | default "0.3" | quote }}
+            - name: OLLAMA_NUM_CTX
+              value: {{ .Values.infra.ollama.numCtx | default "4096" | quote }}
           command:
             - /bin/sh
             - -ec
@@ -33,14 +37,28 @@ spec:
                 sleep 2
               done
 
+              # Pull the base model first
+              BASE_MODEL=""
               echo 'Trying to pull preferred models...'
 {{- range .Values.infra.ollama.preferredModels }}
-              echo "Pulling {{ . }} ..."
-              if ollama pull '{{ . }}'; then
-                echo "Model pulled successfully: {{ . }}"
-                exit 0
+              if [ -z "$BASE_MODEL" ]; then
+                echo "Pulling {{ . }} ..."
+                if ollama pull '{{ . }}'; then
+                  echo "Model pulled successfully: {{ . }}"
+                  BASE_MODEL="{{ . }}"
+                fi
               fi
 {{- end }}
 
-              echo 'Failed to pull any preferred model' >&2
-              exit 1
+              if [ -z "$BASE_MODEL" ]; then
+                echo 'Failed to pull any preferred model' >&2
+                exit 1
+              fi
+
+              # Create custom model with temperature from Modelfile
+              echo "Creating custom model with temperature=${OLLAMA_TEMPERATURE}..."
+              echo "FROM ${BASE_MODEL}" > /tmp/Modelfile
+              echo "PARAMETER temperature ${OLLAMA_TEMPERATURE}" >> /tmp/Modelfile
+              echo "PARAMETER num_ctx ${OLLAMA_NUM_CTX}" >> /tmp/Modelfile
+              ollama create haltefest-qwen -f /tmp/Modelfile
+              echo "Custom model 'haltefest-qwen' created successfully"

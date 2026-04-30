@@ -1,3 +1,4 @@
+# values/infra.yaml
 sharedSecret:
   name: haltefest-shared-secrets
   postgresUser: myappuser
@@ -18,9 +19,8 @@ infra:
     port: 6379
 
   kafka:
-    image: apache/kafka:latest
-    port: 9092
-    controllerPort: 9093
+    enabled: true  # ← Флаг для условного рендера Job'а
+    # image/port/controllerPort больше не нужны — они в values/kafka.yaml
     topics:
       - files-to-parse
       - text-to-classify
@@ -47,3 +47,5 @@ infra:
     preferredModels:
       - qwen2.5:0.5b
       - qwen2.5:1.5b
+    temperature: 0.3
+    numCtx: 4096

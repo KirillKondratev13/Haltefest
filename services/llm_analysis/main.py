@@ -38,7 +38,7 @@ MODEL_WAIT_INTERVAL_SECONDS = int(os.getenv("MODEL_WAIT_INTERVAL_SECONDS", "5"))
 MODEL_WAIT_MAX_SECONDS = int(os.getenv("MODEL_WAIT_MAX_SECONDS", "0"))
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:0.5b")
+LLM_MODEL = os.getenv("LLM_MODEL", "haltefest-qwen")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 LLM_MODEL_FALLBACKS = [
     model.strip()
@@ -520,7 +520,6 @@ async def call_ollama(session: aiohttp.ClientSession, prompt: str, timeout: int 
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3,
             "num_predict": 2048,
             "num_ctx": OLLAMA_NUM_CTX,
         },

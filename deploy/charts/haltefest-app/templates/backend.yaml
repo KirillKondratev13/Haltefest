@@ -16,6 +16,15 @@ spec:
         app: backend
         app.kubernetes.io/part-of: haltefest
     spec:
+      initContainers:
+        - name: wait-for-filer
+          image: curlimages/curl:8.5.0
+          command:
+            - sh
+            - -c
+            - >
+              until curl -fsS http://seaweedfs-filer:8888/ > /dev/null;
+              do echo waiting for seaweedfs-filer; sleep 2; done;
       containers:
         - name: backend
           image: {{ printf "%s:%s" .Values.images.backend.repository .Values.images.backend.tag }}

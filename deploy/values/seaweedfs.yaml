@@ -1,0 +1,48 @@
+# values/seaweedfs.yaml
+fullnameOverride: seaweedfs
+
+allInOne:
+  enabled: false
+
+global:
+  seaweedfs:
+    image:
+      name: chrislusf/seaweedfs
+
+master:
+  replicas: 1
+  port: 9333
+  grpcPort: 19333
+  data:
+    type: emptyDir
+  logs:
+    type: emptyDir
+  # Upstream chart defaults to pod anti-affinity, which blocks a single-node dev cluster.
+  affinity: ""
+
+volume:
+  replicas: 1
+  port: 8080
+  grpcPort: 18080
+  dataDirs:
+    - name: data
+      type: emptyDir
+      maxVolumes: 0
+  idx:
+    type: emptyDir
+  logs:
+    type: emptyDir
+  affinity: ""
+
+filer:
+  replicas: 1
+  port: 8888
+  grpcPort: 18888
+  data:
+    type: emptyDir
+  logs:
+    type: emptyDir
+  affinity: ""
+
+s3:
+  enabled: false

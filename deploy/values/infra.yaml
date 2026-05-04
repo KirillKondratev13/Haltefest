@@ -18,24 +18,6 @@ infra:
     image: dragonflydb/dragonfly:v1.27.1
     port: 6379
 
-  kafka:
-    enabled: true  # ← Флаг для условного рендера Job'а
-    # image/port/controllerPort больше не нужны — они в values/kafka.yaml
-    topics:
-      - files-to-parse
-      - text-to-classify
-      - text-to-index
-      - analysis-requested
-      - analysis-dlq
-      - chat-requested
-      - chat-dlq
-
-  seaweedfs:
-    image: chrislusf/seaweedfs
-    masterPort: 9333
-    volumePort: 8080
-    filerPort: 8888
-
   qdrant:
     image: qdrant/qdrant
     httpPort: 6333

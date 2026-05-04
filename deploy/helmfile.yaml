@@ -4,16 +4,23 @@ helmDefaults:
   createNamespace: true
 
 repositories:
-  - name: bitnami
-    url: https://charts.bitnami.com/bitnami
+  - name: seaweedfs
+    url: https://seaweedfs.github.io/seaweedfs/helm
 
 releases:
   - name: kafka
     namespace: haltefest
-    chart: bitnami/kafka
+    chart: oci://registry-1.docker.io/bitnamicharts/kafka
     version: 26.8.0
     values:
       - ./values/kafka.yaml
+
+  - name: seaweedfs
+    namespace: haltefest
+    chart: seaweedfs/seaweedfs
+    version: 4.20.0
+    values:
+      - ./values/seaweedfs.yaml
 
   - name: haltefest-infra
     namespace: haltefest
@@ -28,6 +35,7 @@ releases:
     chart: ./charts/haltefest-app
     needs:
       - haltefest/kafka
+      - haltefest/seaweedfs
       - haltefest/haltefest-infra
     values:
       - ./values/app.yaml

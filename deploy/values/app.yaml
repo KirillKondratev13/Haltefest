@@ -65,12 +65,12 @@ llmAnalysis:
   kafkaConsumerGroup: llm_analysis_group
   maxAttempts: "6"
   llmTimeoutSeconds: "120"
-  llmModelName: qwen2.5:0.5b
+  llmModelName: haltefest-qwen
   llmModelVersion: qwen2.5-0.5b
   promptVersion: analysis-v1
   ollamaUrl: http://ollama:11434
   qdrantUrl: http://qdrant:6333
-  llmModel: qwen2.5:0.5b
+  llmModel: haltefest-qwen
   llmModelFallbacks: qwen2.5:1.5b
   ollamaNumCtx: "4096"
   gigachatAuthUrl: https://ngw.devices.sberbank.ru:9443/api/v2/oauth

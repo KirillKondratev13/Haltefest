@@ -15,23 +15,6 @@ infra:
   dragonfly:
     image: dragonflydb/dragonfly:v1.27.1
     port: 6379
-  kafka:
-    image: apache/kafka:latest
-    port: 9092
-    controllerPort: 9093
-    topics:
-      - files-to-parse
-      - text-to-classify
-      - text-to-index
-      - analysis-requested
-      - analysis-dlq
-      - chat-requested
-      - chat-dlq
-  seaweedfs:
-    image: chrislusf/seaweedfs
-    masterPort: 9333
-    volumePort: 8080
-    filerPort: 8888
   qdrant:
     image: qdrant/qdrant
     httpPort: 6333

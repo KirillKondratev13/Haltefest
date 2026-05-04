@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,10 +33,20 @@ type filesToParseEvent struct {
 }
 
 const (
-	mimeTypePDF  = "application/pdf"
-	mimeTypeDOC  = "application/msword"
-	mimeTypeDOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	mimeTypePDF            = "application/pdf"
+	mimeTypeDOC            = "application/msword"
+	mimeTypeDOCX           = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	filerUploadMaxAttempts = 3
 )
+
+type filerUploadHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *filerUploadHTTPError) Error() string {
+	return fmt.Sprintf("filer upload error status=%d body=%s", e.StatusCode, e.Body)
+}
 
 func normalizeDetectedMime(fileName, detectedMime string) (string, string) {
 	ext := strings.ToLower(filepath.Ext(fileName))
@@ -73,6 +84,98 @@ func previewHex(data []byte, n int) string {
 		n = len(data)
 	}
 	return hex.EncodeToString(data[:n])
+}
+
+func isRetryableFilerUploadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	var httpErr *filerUploadHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
+	}
+
+	return true
+}
+
+func (fh *FileHandler) uploadFileToFiler(ctx context.Context, file multipart.File, finalName, uploadURL string) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= filerUploadMaxAttempts; attempt++ {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek upload file: %w", err)
+		}
+
+		lastErr = fh.streamFileToFiler(ctx, file, finalName, uploadURL)
+		if lastErr == nil {
+			return nil
+		}
+
+		if attempt == filerUploadMaxAttempts || !isRetryableFilerUploadError(lastErr) {
+			return lastErr
+		}
+
+		slog.Warn("filer upload attempt failed, retrying",
+			"attempt", attempt,
+			"max_attempts", filerUploadMaxAttempts,
+			"upload_url", uploadURL,
+			"err", lastErr,
+		)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+		}
+	}
+
+	return lastErr
+}
+
+func (fh *FileHandler) streamFileToFiler(ctx context.Context, file multipart.File, finalName, uploadURL string) error {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+
+	go func() {
+		defer pw.Close()
+		fw, err := mw.CreateFormFile("file", finalName)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		_, err = io.Copy(fw, file)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		mw.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, pr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return &filerUploadHTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       string(bodyBytes),
+		}
+	}
+
+	return nil
 }
 
 func (fh *FileHandler) getUniqueFileName(ctx context.Context, userID int, originalName string) (string, error) {
@@ -177,40 +280,8 @@ func (fh *FileHandler) handleFileUpload(w http.ResponseWriter, r *http.Request) 
 	filerPath := fmt.Sprintf("/user_%d/%s", user.ID, finalName)
 	uploadURL := fmt.Sprintf("%s%s", fh.FilerURL, filerPath)
 
-	// Стримим файл напрямую в SeaweedFS
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-
-	go func() {
-		defer pw.Close()
-		fw, err := mw.CreateFormFile("file", finalName)
-		if err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-		_, err = io.Copy(fw, file)
-		if err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-		mw.Close()
-	}()
-
-	req, err := http.NewRequest("POST", uploadURL, pr)
-	if err != nil {
+	if err := fh.uploadFileToFiler(r.Context(), file, finalName, uploadURL); err != nil {
 		return err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("filer upload error: %s", string(bodyBytes))
 	}
 
 	// Maximum file size for processing (25MB)
